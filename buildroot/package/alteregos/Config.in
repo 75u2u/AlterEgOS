@@ -1,0 +1,5 @@
+config BR2_PACKAGE_ALTEREGOS
+	bool "alteregos (init + agent)"
+	help
+	  The AlterEgOS userland: /sbin/init (PID 1 supervisor) and
+	  /usr/bin/alterego (the agent). Built from ../src in this repository.

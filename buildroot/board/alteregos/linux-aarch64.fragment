@@ -1,0 +1,7 @@
+# aarch64: PL011 UART is the console on both QEMU virt and the Raspberry Pi
+CONFIG_SERIAL_AMBA_PL011=y
+CONFIG_SERIAL_AMBA_PL011_CONSOLE=y
+# Raspberry Pi 4/5 bits (unused under QEMU virt, needed once we move to the Pi)
+CONFIG_ARCH_BCM=y
+CONFIG_ARCH_BCM2835=y
+CONFIG_SERIAL_8250_BCM2835AUX=y

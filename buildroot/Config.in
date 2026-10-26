@@ -1,0 +1,1 @@
+source "$BR2_EXTERNAL_ALTEREGOS_PATH/package/alteregos/Config.in"

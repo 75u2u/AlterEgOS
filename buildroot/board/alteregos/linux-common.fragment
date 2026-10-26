@@ -1,0 +1,39 @@
+# Shared by every AlterEgOS target. Appended on top of the arch defconfig.
+
+# init needs these mounted by hand, so they must be built in
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=n
+CONFIG_TMPFS=y
+CONFIG_PROC_FS=y
+CONFIG_SYSFS=y
+CONFIG_UNIX98_PTYS=y
+
+# initramfs boot (day 1) and the btrfs root that replaces it (day 5)
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_RD_GZIP=y
+CONFIG_BTRFS_FS=y
+CONFIG_BTRFS_FS_POSIX_ACL=y
+
+# virtio for QEMU; harmless on real hardware
+CONFIG_VIRTIO=y
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_MMIO=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_VIRTIO_NET=y
+CONFIG_VIRTIO_CONSOLE=y
+CONFIG_HW_RANDOM_VIRTIO=y
+
+# networking the agent will need from day 2 (DHCP, HTTPS)
+CONFIG_NET=y
+CONFIG_INET=y
+CONFIG_PACKET=y
+CONFIG_UNIX=y
+
+# /proc/config.gz: the agent can read how its own kernel was built
+CONFIG_IKCONFIG=y
+CONFIG_IKCONFIG_PROC=y
+
+# the agent's exec/build tools will use these
+CONFIG_SECCOMP=y
+CONFIG_NAMESPACES=y
+CONFIG_CGROUPS=y

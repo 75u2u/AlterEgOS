@@ -1,0 +1,35 @@
+# AlterEgOS, x86_64 (QEMU q35 now, PC hardware later)
+BR2_x86_64=y
+BR2_x86_64_v2=y
+
+# musl: small static binaries, no glibc surprises in PID 1
+BR2_TOOLCHAIN_BUILDROOT_MUSL=y
+BR2_TOOLCHAIN_BUILDROOT_CXX=y
+
+# No init system from Buildroot: our package installs /sbin/init
+BR2_INIT_NONE=y
+BR2_SYSTEM_BIN_SH_BUSYBOX=y
+BR2_TARGET_GENERIC_HOSTNAME="alteregos"
+BR2_TARGET_GENERIC_ISSUE=""
+BR2_TARGET_GENERIC_ROOT_PASSWD=""
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_ALTEREGOS_PATH)/board/alteregos/rootfs-overlay"
+
+# Escape hatch on tty2 and a few diagnostics tools; nothing else
+BR2_PACKAGE_BUSYBOX=y
+BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_ALTEREGOS_PATH)/board/alteregos/busybox.fragment"
+
+# The OS itself
+BR2_PACKAGE_ALTEREGOS=y
+
+# Kernel: LTS, arch defconfig + our fragment (virtio, btrfs, serial console)
+BR2_LINUX_KERNEL=y
+BR2_LINUX_KERNEL_CUSTOM_VERSION=y
+BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="6.12.30"
+BR2_LINUX_KERNEL_USE_ARCH_DEFAULT_CONFIG=y
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_ALTEREGOS_PATH)/board/alteregos/linux-common.fragment $(BR2_EXTERNAL_ALTEREGOS_PATH)/board/alteregos/linux-x86_64.fragment"
+BR2_LINUX_KERNEL_BZIMAGE=y
+
+# Day 1: boot from an initramfs. A btrfs root disk arrives on day 5.
+BR2_TARGET_ROOTFS_CPIO=y
+BR2_TARGET_ROOTFS_CPIO_GZIP=y
+# BR2_TARGET_ROOTFS_TAR is not set
