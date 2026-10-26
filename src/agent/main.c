@@ -10,12 +10,25 @@
 
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
 #include "persona.h"
+
+/* One line to the kernel log so a serial console, dmesg or the CI boot test
+ * can see the agent came up even when its own tty is the VGA screen.
+ * Silently does nothing where /dev/kmsg is unavailable (host runs). */
+static void kmsg_up(const struct persona *p)
+{
+    int fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
+    if (fd < 0) return;
+    const char *tty = ttyname(STDIN_FILENO);
+    dprintf(fd, "<6>alterego: up, persona %s, talking on %s\n", p->name, tty ? tty : "?");
+    close(fd);
+}
 
 static void greet(const struct persona *p)
 {
@@ -38,6 +51,7 @@ int main(void)
     }
 
     setvbuf(stdout, NULL, _IOLBF, 0);
+    kmsg_up(&p);
     greet(&p);
 
     char *line = NULL;

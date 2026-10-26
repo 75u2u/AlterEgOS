@@ -6,3 +6,36 @@ CONFIG_VT_CONSOLE=y
 CONFIG_FB=y
 CONFIG_FB_VESA=y
 CONFIG_FRAMEBUFFER_CONSOLE=y
+
+# Boot as an EFI application straight from the firmware (no bootloader):
+# EFI stub + a built-in command line. A bootloader's or QEMU's -append is
+# appended after this, so its console= wins when present.
+CONFIG_EFI=y
+CONFIG_EFI_STUB=y
+CONFIG_EFI_MIXED=n
+CONFIG_CMDLINE_BOOL=y
+CONFIG_CMDLINE="console=ttyS0,115200 console=tty0 init=/sbin/init"
+CONFIG_CMDLINE_OVERRIDE=n
+
+# Screen and keyboard on a real PC: EFI framebuffer, USB and PS/2 keyboards
+CONFIG_SYSFB=y
+CONFIG_SYSFB_SIMPLEFB=y
+CONFIG_FB_EFI=y
+CONFIG_FB_SIMPLE=y
+CONFIG_INPUT_KEYBOARD=y
+CONFIG_KEYBOARD_ATKBD=y
+CONFIG_USB=y
+CONFIG_USB_XHCI_HCD=y
+CONFIG_USB_EHCI_HCD=y
+CONFIG_USB_OHCI_HCD=y
+CONFIG_USB_UHCI_HCD=y
+CONFIG_HID=y
+CONFIG_HID_GENERIC=y
+CONFIG_USB_HID=y
+CONFIG_USB_STORAGE=y
+CONFIG_BLK_DEV_SD=y
+CONFIG_SCSI=y
+
+# Disks on real hardware: NVMe, AHCI, and USB sticks are enough to start
+CONFIG_BLK_DEV_NVME=y
+CONFIG_SATA_AHCI=y

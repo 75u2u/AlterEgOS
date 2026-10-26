@@ -55,7 +55,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential git curl bc bison flex cpio rsync file unzip wget \
             libncurses-dev libssl-dev libelf-dev python3 \
-            qemu-system-x86 qemu-system-arm
+            qemu-system-x86 qemu-system-arm ovmf
 
       - name: Restore Buildroot download cache
         uses: actions/cache@v4
@@ -79,12 +79,16 @@ jobs:
       - name: Boot test in QEMU
         run: scripts/boot-test.sh ${{ matrix.arch }} 300
 
+      - name: Boot test through UEFI firmware (USB image)
+        if: matrix.arch == 'x86_64'
+        run: scripts/boot-test-efi.sh 300
+
       - name: Collect images
         run: |
           out=dist/alteregos-${{ matrix.arch }}
           mkdir -p "$out"
           case "${{ matrix.arch }}" in
-            x86_64)  cp build/x86_64/images/bzImage "$out/" ;;
+            x86_64)  cp build/x86_64/images/bzImage build/x86_64/images/alteregos-x86_64.img "$out/" ;;
             aarch64) cp build/aarch64/images/Image "$out/" ;;
           esac
           cp build/${{ matrix.arch }}/images/rootfs.cpio.gz "$out/"
@@ -98,7 +102,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: boot-log-${{ matrix.arch }}
-          path: build/${{ matrix.arch }}/boot.log
+          path: build/${{ matrix.arch }}/boot*.log
           if-no-files-found: ignore
 
       - name: Upload image

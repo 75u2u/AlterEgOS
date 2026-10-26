@@ -50,23 +50,55 @@ static volatile sig_atomic_t g_shutdown = 0;   /* which signal asked us to stop 
 
 /* ------------------------------------------------------------------------ */
 /* logging: PID 1 writes to the console with a fixed prefix so the agent's    */
-/* own output is easy to tell apart.                                          */
+/* own output is easy to tell apart, and the same line to /dev/kmsg so it     */
+/* reaches every kernel console (a serial line watching a VGA boot, dmesg).   */
 
 static void logf_(const char *fmt, ...)
 {
-    char buf[512];
+    char msg[480];
     va_list ap;
     va_start(ap, fmt);
-    int n = snprintf(buf, sizeof buf, "[init] ");
-    n += vsnprintf(buf + n, sizeof buf - (size_t)n, fmt, ap);
+    int n = vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
-    if (n > 0 && (size_t)n < sizeof buf - 1) {
-        buf[n++] = '\n';
-    }
+    if (n < 0) return;
+    if ((size_t)n >= sizeof msg) n = (int)sizeof msg - 1;
+
+    char line[512];
+    int len = snprintf(line, sizeof line, "[init] %.*s\n", n, msg);
     int fd = open(AGENT_CONSOLE, O_WRONLY | O_NOCTTY | O_CLOEXEC);
     if (fd < 0) fd = STDERR_FILENO;
-    (void)!write(fd, buf, (size_t)n);
+    (void)!write(fd, line, (size_t)len);
     if (fd != STDERR_FILENO) close(fd);
+
+    int kfd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
+    if (kfd >= 0) {
+        len = snprintf(line, sizeof line, "<6>alteregos-init: %.*s\n", n, msg);
+        (void)!write(kfd, line, (size_t)len);
+        close(kfd);
+    }
+}
+
+/* Where the agent should talk. The kernel's primary console (the last
+ * `console=` on the command line, the last entry in
+ * /sys/class/tty/console/active) decides: a VT (tty0) means a screen and a
+ * keyboard, so the agent gets its own virtual terminal, tty1; anything else
+ * (a serial line under QEMU -nographic, a real UART) means /dev/console. */
+static const char *pick_agent_tty(void)
+{
+    char buf[128];
+    int fd = open("/sys/class/tty/console/active", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return AGENT_CONSOLE;
+    ssize_t n = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (n <= 0) return AGENT_CONSOLE;
+    buf[n] = '\0';
+
+    char *last = NULL;
+    for (char *tok = strtok(buf, " \n"); tok; tok = strtok(NULL, " \n")) last = tok;
+    if (last && strcmp(last, "tty0") == 0 && access("/dev/tty1", F_OK) == 0) {
+        return "/dev/tty1";
+    }
+    return AGENT_CONSOLE;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -310,7 +342,9 @@ int alteregos_init_main(void)
     install_signals();
     mount_all();
     set_identity();
-    logf_("AlterEgOS " ALTEREGOS_VERSION " booted, starting the agent");
+    g_children[CHILD_AGENT].tty = pick_agent_tty();
+    logf_("AlterEgOS " ALTEREGOS_VERSION " booted, starting the agent on %s",
+          g_children[CHILD_AGENT].tty);
 
     for (int i = 0; i < CHILD_COUNT; i++) spawn(&g_children[i]);
 
