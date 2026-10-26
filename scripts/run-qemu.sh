@@ -1,18 +1,39 @@
 #!/usr/bin/env bash
 # Boot the images built by scripts/build.sh in QEMU, console on this terminal.
 #
-#   scripts/run-qemu.sh x86_64
+#   scripts/run-qemu.sh x86_64          # kernel + initramfs, serial console
 #   scripts/run-qemu.sh aarch64
+#   scripts/run-qemu.sh x86_64 --efi    # the USB image through UEFI firmware,
+#                                       # the way a real PC boots it (needs ovmf)
 #
-# Quit with Ctrl-A then X. The agent talks on the serial console; tty2 (the
-# busybox escape shell) is not reachable in -nographic mode, which is fine for
-# day 1. Pass QEMU_EXTRA="-display gtk" to get a VGA window with tty2.
+# Quit with Ctrl-A then X. In the plain mode the agent talks on the serial
+# console. In --efi mode the agent talks on the VGA screen (tty1) like on a
+# real PC, so pass QEMU_EXTRA="-display gtk" to see and type to it; the serial
+# line then only carries the kernel log.
 set -euo pipefail
 
 ARCH="${1:-x86_64}"
+MODE="${2:-}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IMG="$REPO/build/$ARCH/images"
 MEM="${MEM:-1024}"
+
+if [ "$MODE" = "--efi" ]; then
+    [ "$ARCH" = "x86_64" ] || { echo "--efi is x86_64 only for now" >&2; exit 2; }
+    OVMF="${OVMF:-}"
+    for f in /usr/share/ovmf/OVMF.fd /usr/share/OVMF/OVMF.fd /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/edk2/x64/OVMF.fd; do
+        [ -n "$OVMF" ] && break
+        [ -f "$f" ] && OVMF="$f"
+    done
+    [ -n "$OVMF" ] || { echo "OVMF not found (apt install ovmf)" >&2; exit 2; }
+    exec qemu-system-x86_64 \
+        -machine q35,accel=kvm:tcg -cpu max -m "$MEM" -smp 2 \
+        -bios "$OVMF" \
+        -drive file="$IMG/alteregos-x86_64.img",format=raw,if=virtio \
+        -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
+        -device virtio-rng-pci \
+        -nographic ${QEMU_EXTRA:-}
+fi
 
 case "$ARCH" in
     x86_64)
@@ -34,5 +55,5 @@ case "$ARCH" in
             -nographic ${QEMU_EXTRA:-}
         ;;
     *)
-        echo "usage: $0 {x86_64|aarch64}" >&2; exit 2 ;;
+        echo "usage: $0 {x86_64|aarch64} [--efi]" >&2; exit 2 ;;
 esac

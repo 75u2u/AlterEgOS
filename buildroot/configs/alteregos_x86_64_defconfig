@@ -36,7 +36,16 @@ BR2_LINUX_KERNEL_USE_ARCH_DEFAULT_CONFIG=y
 BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_ALTEREGOS_PATH)/board/alteregos/linux-common.fragment $(BR2_EXTERNAL_ALTEREGOS_PATH)/board/alteregos/linux-x86_64.fragment"
 BR2_LINUX_KERNEL_BZIMAGE=y
 
-# Day 1: boot from an initramfs. A btrfs root disk arrives on day 5.
+# Root filesystem: an initramfs, both as a separate rootfs.cpio.gz (QEMU
+# -kernel/-initrd) and embedded into bzImage so the kernel alone is a bootable
+# EFI application. A btrfs root disk arrives on day 5.
 BR2_TARGET_ROOTFS_CPIO=y
 BR2_TARGET_ROOTFS_CPIO_GZIP=y
+BR2_TARGET_ROOTFS_INITRAMFS=y
 # BR2_TARGET_ROOTFS_TAR is not set
+
+# USB / disk image for UEFI PCs (board/alteregos/genimage-efi.cfg)
+BR2_PACKAGE_HOST_GENIMAGE=y
+BR2_PACKAGE_HOST_DOSFSTOOLS=y
+BR2_PACKAGE_HOST_MTOOLS=y
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_ALTEREGOS_PATH)/board/alteregos/post-image.sh"

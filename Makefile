@@ -3,7 +3,7 @@
 
 ARCH ?= x86_64
 
-.PHONY: all check host clean x86_64 aarch64 run-x86_64 run-aarch64 boot-test-x86_64 boot-test-aarch64
+.PHONY: all check host clean x86_64 aarch64 run-x86_64 run-aarch64 run-efi boot-test-x86_64 boot-test-aarch64 boot-test-efi
 
 all: host
 
@@ -25,9 +25,16 @@ x86_64 aarch64:
 run-x86_64 run-aarch64:
 	scripts/run-qemu.sh $(@:run-%=%)
 
-# Unattended boot check (what CI runs): init up and AlterEgo greeting on serial.
+# Unattended boot checks (what CI runs): init up and AlterEgo greeting on serial;
+# boot-test-efi boots the USB image through UEFI firmware (needs ovmf).
 boot-test-x86_64 boot-test-aarch64:
 	scripts/boot-test.sh $(@:boot-test-%=%)
+
+boot-test-efi:
+	scripts/boot-test-efi.sh
+
+run-efi:
+	scripts/run-qemu.sh x86_64 --efi
 
 clean:
 	$(MAKE) -C src/init clean

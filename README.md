@@ -20,6 +20,32 @@ PID 1 がエージェント「AlterEgo」を起動し、bash も systemd もデ�
 - `src/agent/`: エージェントの土台。persona.toml を読んで挨拶し、入力を返す(会話は 3 日目から)
 - `buildroot/`: Buildroot の外部ツリー。x86_64 / aarch64 の defconfig、カーネル設定の断片、rootfs のオーバーレイ
 
+## 使ってみる(ビルドせずに)
+
+[Releases](https://github.com/75u2u/AlterEgOS/releases) から `alteregos-x86_64-<tag>.tar.gz` を落として展開する。
+
+**PC に USB メモリから起動する**(UEFI、Secure Boot はオフにする):
+
+```sh
+sudo dd if=alteregos-x86_64.img of=/dev/sdX bs=4M status=progress conv=fsync   # sdX は USB メモリ
+```
+
+USB から起動すると、画面に AlterEgo の挨拶が出て、キーボードで話しかけられる。
+ブートローダはなく、カーネル自身が EFI アプリとして起動する(initramfs 埋め込み)。
+Alt+F2 で tty2 の busybox シェル、Alt+F1 で AlterEgo に戻る。
+
+**QEMU で試す**:
+
+```sh
+sudo apt install qemu-system-x86 ovmf
+qemu-system-x86_64 -machine q35,accel=kvm:tcg -cpu max -m 1024 \
+    -bios /usr/share/ovmf/OVMF.fd -drive file=alteregos-x86_64.img,format=raw,if=virtio   # 実機と同じ起動(ウィンドウに表示)
+qemu-system-x86_64 -machine q35,accel=kvm:tcg -cpu max -m 1024 -nographic \
+    -kernel bzImage -initrd rootfs.cpio.gz -append "console=ttyS0"                            # 端末の中で会話(Ctrl-A, X で終了)
+```
+
+Raspberry Pi 用の SD カードイメージはまだ無い(`alteregos-aarch64` は QEMU virt 向けのカーネルと initramfs)。
+
 ## ビルド(Ubuntu)
 
 ```sh
@@ -50,8 +76,8 @@ ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.t
 git tag v0.1.0 && git push origin v0.1.0     # Release を作る
 ```
 
-Artifact / Release の中身: カーネル(`bzImage` または `Image`)、`rootfs.cpio.gz`、`run-qemu.sh`、`VERSION`、`SHA256SUMS`。
-手元で試すなら展開して `scripts/run-qemu.sh` と同じ引数で QEMU を起動する。
+Artifact / Release の中身: カーネル(`bzImage` または `Image`)、`rootfs.cpio.gz`、x86_64 は USB 用の `alteregos-x86_64.img`、`run-qemu.sh`、`VERSION`、`SHA256SUMS`。
+x86_64 は `image` ワークフローの中で、QEMU の `-kernel` 起動に加えて OVMF(UEFI ファームウェア)から `.img` を起動するテストも通してから出している。
 
 ## レイアウト
 
@@ -59,7 +85,7 @@ Artifact / Release の中身: カーネル(`bzImage` または `Image`)、`rootf
 src/init/        PID 1(C、静的リンク)
 src/agent/       エージェント(C、静的リンク)
 buildroot/       BR2_EXTERNAL ツリー(configs/、board/alteregos/、package/alteregos/)
-scripts/         build.sh、run-qemu.sh、boot-test.sh
+scripts/         build.sh、run-qemu.sh、boot-test.sh、boot-test-efi.sh
 build/           Buildroot 本体と成果物(git 管理外)
 ```
 
