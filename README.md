@@ -34,7 +34,7 @@ USB から起動すると、画面に AlterEgo の挨拶が出て、キーボー
 ブートローダはなく、カーネル自身が EFI アプリとして起動する(initramfs 埋め込み)。
 Alt+F2 で tty2 の busybox シェル、Alt+F1 で AlterEgo に戻る。
 
-**QEMU で試す**:
+**QEMU で試す**(同梱の `run-qemu.sh` は展開先でそのまま動く。`./run-qemu.sh` で端末の中、`./run-qemu.sh x86_64 --efi` で UEFI 起動):
 
 ```sh
 sudo apt install qemu-system-x86 ovmf

@@ -6,16 +6,27 @@
 #   scripts/run-qemu.sh x86_64 --efi    # the USB image through UEFI firmware,
 #                                       # the way a real PC boots it (needs ovmf)
 #
+# Also works standalone from an unpacked Release archive (the images are then
+# looked up next to this script instead of under build/<arch>/images).
+#
 # Quit with Ctrl-A then X. In the plain mode the agent talks on the serial
 # console. In --efi mode the agent talks on the VGA screen (tty1) like on a
 # real PC, so pass QEMU_EXTRA="-display gtk" to see and type to it; the serial
 # line then only carries the kernel log.
 set -euo pipefail
 
-ARCH="${1:-x86_64}"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$HERE/rootfs.cpio.gz" ]; then
+    # Unpacked Release archive: images sit next to this script, and the
+    # architecture follows from which kernel is there.
+    IMG="$HERE"
+    DEFAULT_ARCH=x86_64; [ -f "$HERE/Image" ] && DEFAULT_ARCH=aarch64
+    ARCH="${1:-$DEFAULT_ARCH}"
+else
+    ARCH="${1:-x86_64}"
+    IMG="$HERE/../build/$ARCH/images"   # source tree after scripts/build.sh
+fi
 MODE="${2:-}"
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IMG="$REPO/build/$ARCH/images"
 MEM="${MEM:-1024}"
 
 if [ "$MODE" = "--efi" ]; then
