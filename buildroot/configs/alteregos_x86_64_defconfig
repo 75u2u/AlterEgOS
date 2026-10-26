@@ -6,6 +6,9 @@ BR2_x86_64_v2=y
 BR2_TOOLCHAIN_BUILDROOT_MUSL=y
 BR2_TOOLCHAIN_BUILDROOT_CXX=y
 
+# ccache: the second build of the toolchain and kernel is minutes, not an hour
+BR2_CCACHE=y
+
 # No init system from Buildroot: our package installs /sbin/init
 BR2_INIT_NONE=y
 BR2_SYSTEM_BIN_SH_BUSYBOX=y
@@ -25,6 +28,10 @@ BR2_PACKAGE_ALTEREGOS=y
 BR2_LINUX_KERNEL=y
 BR2_LINUX_KERNEL_CUSTOM_VERSION=y
 BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="6.12.30"
+# The toolchain is built against the same kernel series (without these two
+# lines Buildroot expects 2.6.x headers and the toolchain build stops)
+BR2_KERNEL_HEADERS_AS_KERNEL=y
+BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_12=y
 BR2_LINUX_KERNEL_USE_ARCH_DEFAULT_CONFIG=y
 BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_ALTEREGOS_PATH)/board/alteregos/linux-common.fragment $(BR2_EXTERNAL_ALTEREGOS_PATH)/board/alteregos/linux-x86_64.fragment"
 BR2_LINUX_KERNEL_BZIMAGE=y

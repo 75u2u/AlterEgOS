@@ -1,0 +1,132 @@
+name: image
+
+# Full Buildroot build of AlterEgOS for both architectures, a QEMU boot test,
+# and the images as downloadable artifacts. A tag `v*` also publishes them as
+# a GitHub Release. The first run takes about an hour per architecture; later
+# runs reuse the download and ccache caches and finish in minutes unless the
+# toolchain or kernel configuration changed.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'buildroot/**'
+      - 'src/**'
+      - 'scripts/**'
+      - '.github/workflows/image.yml'
+  pull_request:
+    paths:
+      - 'buildroot/**'
+      - 'src/**'
+      - 'scripts/**'
+      - '.github/workflows/image.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write   # needed only by the release job
+
+env:
+  BR_VERSION: 2025.02.3
+
+jobs:
+  build:
+    name: build (${{ matrix.arch }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    env:
+      BR2_DL_DIR: ${{ github.workspace }}/build/dl   # honored by Buildroot from the environment
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # git describe for the version string baked into init
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git curl bc bison flex cpio rsync file unzip wget \
+            libncurses-dev libssl-dev libelf-dev python3 \
+            qemu-system-x86 qemu-system-arm
+
+      - name: Restore Buildroot download cache
+        uses: actions/cache@v4
+        with:
+          path: build/dl
+          key: br-dl-${{ env.BR_VERSION }}-${{ hashFiles('buildroot/configs/*', 'buildroot/board/**') }}
+          restore-keys: |
+            br-dl-${{ env.BR_VERSION }}-
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.buildroot-ccache   # BR2_CCACHE_DIR default
+          key: br-ccache-${{ matrix.arch }}-${{ env.BR_VERSION }}-${{ github.sha }}
+          restore-keys: |
+            br-ccache-${{ matrix.arch }}-${{ env.BR_VERSION }}-
+
+      - name: Build with Buildroot
+        run: scripts/build.sh ${{ matrix.arch }}
+
+      - name: Boot test in QEMU
+        run: scripts/boot-test.sh ${{ matrix.arch }} 300
+
+      - name: Collect images
+        run: |
+          out=dist/alteregos-${{ matrix.arch }}
+          mkdir -p "$out"
+          case "${{ matrix.arch }}" in
+            x86_64)  cp build/x86_64/images/bzImage "$out/" ;;
+            aarch64) cp build/aarch64/images/Image "$out/" ;;
+          esac
+          cp build/${{ matrix.arch }}/images/rootfs.cpio.gz "$out/"
+          cp scripts/run-qemu.sh "$out/"
+          git describe --always --dirty > "$out/VERSION"
+          (cd "$out" && sha256sum * > SHA256SUMS)
+          ls -la "$out"
+
+      - name: Upload boot log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-log-${{ matrix.arch }}
+          path: build/${{ matrix.arch }}/boot.log
+          if-no-files-found: ignore
+
+      - name: Upload image
+        uses: actions/upload-artifact@v4
+        with:
+          name: alteregos-${{ matrix.arch }}
+          path: dist/alteregos-${{ matrix.arch }}
+          if-no-files-found: error
+
+  release:
+    name: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: alteregos-*
+          path: dist
+      - name: Pack
+        run: |
+          cd dist
+          for d in alteregos-*; do tar -czf "$d-${GITHUB_REF_NAME}.tar.gz" "$d"; done
+          sha256sum *.tar.gz > SHA256SUMS
+          ls -la
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          generate_release_notes: true
