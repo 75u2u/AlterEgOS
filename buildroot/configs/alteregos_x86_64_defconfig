@@ -28,6 +28,10 @@ BR2_PACKAGE_ALTEREGOS=y
 BR2_LINUX_KERNEL=y
 BR2_LINUX_KERNEL_CUSTOM_VERSION=y
 BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="6.12.30"
+# The toolchain is built against the same kernel series (without these two
+# lines Buildroot expects 2.6.x headers and the toolchain build stops)
+BR2_KERNEL_HEADERS_AS_KERNEL=y
+BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_12=y
 BR2_LINUX_KERNEL_USE_ARCH_DEFAULT_CONFIG=y
 BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_ALTEREGOS_PATH)/board/alteregos/linux-common.fragment $(BR2_EXTERNAL_ALTEREGOS_PATH)/board/alteregos/linux-x86_64.fragment"
 BR2_LINUX_KERNEL_BZIMAGE=y
