@@ -3,7 +3,7 @@
 
 ARCH ?= x86_64
 
-.PHONY: all check host clean x86_64 aarch64 run-x86_64 run-aarch64
+.PHONY: all check host clean x86_64 aarch64 run-x86_64 run-aarch64 boot-test-x86_64 boot-test-aarch64
 
 all: host
 
@@ -24,6 +24,10 @@ x86_64 aarch64:
 
 run-x86_64 run-aarch64:
 	scripts/run-qemu.sh $(@:run-%=%)
+
+# Unattended boot check (what CI runs): init up and AlterEgo greeting on serial.
+boot-test-x86_64 boot-test-aarch64:
+	scripts/boot-test.sh $(@:boot-test-%=%)
 
 clean:
 	$(MAKE) -C src/init clean
