@@ -42,6 +42,7 @@ enum ctype utf8_class(uint32_t cp)
     if (cp < 0x80) {
         if (cp >= '0' && cp <= '9') return CT_DIGIT;
         if ((cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z')) return CT_LATIN;
+        if (cp == '\'') return CT_LATIN;                  /* don't, I'm: one word */
         return CT_PUNCT;
     }
     if (cp >= 0x3041 && cp <= 0x309F) return CT_HIRAGANA;

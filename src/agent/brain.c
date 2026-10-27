@@ -16,6 +16,9 @@
 #define WORD_MAX   48           /* bytes per "word" */
 #define WORDS_MAX  512
 #define CP_END     0            /* end-of-utterance symbol */
+#define WORDER     2            /* longest context of the English model, in words */
+#define TOKS_MAX   64
+#define GEN_WORDS  24
 
 /* ---- n-gram model: context (order, code points) -> next code point counts */
 
@@ -31,18 +34,74 @@ struct ctx {
 
 struct word { char s[WORD_MAX]; unsigned count; };
 
+/* ---- English: word n-gram, context (order, words) -> next word counts.
+ * English puts spaces between words, so the model can work on words where
+ * the Japanese one has to work on characters. "" is the end-of-utterance
+ * word; a context of "" words is the start. */
+
+struct wnxt { char w[WORD_MAX]; unsigned count; };
+
+struct wctx {
+    int order;
+    char key[WORDER][WORD_MAX];
+    struct wnxt *nxt;
+    unsigned n, cap, total;
+    struct wctx *chain;
+};
+
+struct toks { char w[TOKS_MAX][WORD_MAX]; int n; };
+
 struct brain {
     struct ctx *bucket[BUCKETS];
+    struct wctx *wbucket[BUCKETS];
     char **utt;                 /* the log, in order */
     int nutt, utt_cap;
     struct word words[WORDS_MAX];   /* content words: kanji / katakana / latin runs */
     int nwords;
     struct word endings[64];        /* last two code points of an utterance */
     int nendings;
+    struct word endings_en[64];     /* last word of an English utterance */
+    int nendings_en;
     unsigned long chars, questions, exclaims;
+    int nutt_en;                    /* how many of the utterances were English */
+    enum brain_lang lang;           /* language of the latest utterance */
     int mirror_after;
     uint64_t rng;
 };
+
+/* ---- language */
+
+enum brain_lang brain_detect_lang(const char *s, enum brain_lang fallback)
+{
+    uint32_t cp;
+    size_t k;
+    int latin = 0;
+    while ((k = utf8_decode(s, &cp)) > 0) {
+        enum ctype t = utf8_class(cp);
+        if (t == CT_HIRAGANA || t == CT_KATAKANA || t == CT_KANJI) return BRAIN_JA;
+        if (t == CT_LATIN && cp != '\'') latin++;
+        s += k;
+    }
+    return latin >= 2 ? BRAIN_EN : fallback;
+}
+
+enum brain_lang brain_lang(const struct brain *b) { return b->lang; }
+
+static void lower_ascii(char *s) { for (; *s; s++) if (*s >= 'A' && *s <= 'Z') *s = (char)(*s + 32); }
+
+/* Words that say nothing about what the user talks about. */
+static int stopword(const char *w)
+{
+    static const char *const sw[] = {
+        "i", "a", "an", "the", "to", "is", "am", "are", "was", "were", "be", "been", "it", "its", "it's",
+        "you", "your", "me", "my", "we", "our", "he", "she", "they", "them", "his", "her", "and", "or",
+        "but", "so", "of", "in", "on", "at", "for", "with", "that", "this", "these", "those", "do",
+        "does", "did", "don't", "didn't", "have", "has", "had", "not", "no", "yes", "i'm", "i've",
+        "i'd", "i'll", "can", "can't", "will", "would", "just", "too", "very", "really", "there",
+        "what", "how", "why", "when", "who", "if", "as", "than", "then", "about", "up", "out", NULL };
+    for (int i = 0; sw[i]; i++) if (strcmp(w, sw[i]) == 0) return 1;
+    return 0;
+}
 
 static uint64_t rnd(struct brain *b)
 {
@@ -114,6 +173,145 @@ static int ngram_next(struct brain *b, const uint32_t *hist, uint32_t *out)
     return 0;
 }
 
+static void word_count(struct word *tab, int *n, int cap, const char *s);
+
+/* ---- English word n-gram */
+
+static unsigned hash_wctx(int order, char (*key)[WORD_MAX])
+{
+    uint32_t h = 2166136261u ^ (uint32_t)(order + 7);
+    for (int i = 0; i < order; i++)
+        for (const char *p = key[i]; ; p++) { h ^= (unsigned char)*p; h *= 16777619u; if (!*p) break; }
+    return h % BUCKETS;
+}
+
+static struct wctx *wctx_find(struct brain *b, int order, char (*key)[WORD_MAX], int create)
+{
+    unsigned h = hash_wctx(order, key);
+    for (struct wctx *c = b->wbucket[h]; c; c = c->chain) {
+        if (c->order != order) continue;
+        int same = 1;
+        for (int i = 0; i < order && same; i++) same = strcmp(c->key[i], key[i]) == 0;
+        if (same) return c;
+    }
+    if (!create) return NULL;
+    struct wctx *c = calloc(1, sizeof *c);
+    if (!c) return NULL;
+    c->order = order;
+    for (int i = 0; i < order; i++) snprintf(c->key[i], WORD_MAX, "%s", key[i]);
+    c->chain = b->wbucket[h];
+    b->wbucket[h] = c;
+    return c;
+}
+
+static void wctx_add(struct wctx *c, const char *w)
+{
+    for (unsigned i = 0; i < c->n; i++)
+        if (strcmp(c->nxt[i].w, w) == 0) { c->nxt[i].count++; c->total++; return; }
+    if (c->n == c->cap) {
+        unsigned cap = c->cap ? c->cap * 2 : 4;
+        struct wnxt *p = realloc(c->nxt, cap * sizeof *p);
+        if (!p) return;
+        c->nxt = p;
+        c->cap = cap;
+    }
+    snprintf(c->nxt[c->n].w, WORD_MAX, "%s", w);
+    c->nxt[c->n].count = 1;
+    c->n++;
+    c->total++;
+}
+
+static void wngram_add(struct brain *b, char (*hist)[WORD_MAX], const char *w)
+{
+    for (int order = 1; order <= WORDER; order++) {
+        struct wctx *c = wctx_find(b, order, hist + (WORDER - order), 1);
+        if (c) wctx_add(c, w);
+    }
+}
+
+static int wngram_next(struct brain *b, char (*hist)[WORD_MAX], char *out)
+{
+    for (int order = WORDER; order >= 1; order--) {
+        struct wctx *c = wctx_find(b, order, hist + (WORDER - order), 0);
+        if (!c || c->total == 0) continue;
+        unsigned r = (unsigned)(rnd(b) % c->total);
+        for (unsigned i = 0; i < c->n; i++) {
+            if (r < c->nxt[i].count) { snprintf(out, WORD_MAX, "%s", c->nxt[i].w); return 1; }
+            r -= c->nxt[i].count;
+        }
+    }
+    return 0;
+}
+
+static void whist_push(char (*hist)[WORD_MAX], const char *w)
+{
+    memmove(hist[0], hist[1], (size_t)(WORDER - 1) * WORD_MAX);
+    snprintf(hist[WORDER - 1], WORD_MAX, "%s", w);
+}
+
+static int is_punct_tok(const char *w) { return w[0] && !w[1] && strchr(".,!?;:", w[0]); }
+
+/* Lower-case words, with . , ! ? ; : as words of their own. */
+static void tokenize_en(const char *s, struct toks *t)
+{
+    char run[WORD_MAX];
+    size_t rl = 0;
+    uint32_t cp;
+    size_t k;
+    t->n = 0;
+    while ((k = utf8_decode(s, &cp)) > 0) {
+        enum ctype c = utf8_class(cp);
+        if (c == CT_LATIN || c == CT_DIGIT) {
+            if (rl + k < sizeof run) { memcpy(run + rl, s, k); rl += k; }
+        } else {
+            if (rl && t->n < TOKS_MAX) { run[rl] = '\0'; lower_ascii(run); snprintf(t->w[t->n++], WORD_MAX, "%s", run); }
+            rl = 0;
+            if (cp < 0x80 && strchr(".,!?;:", (int)cp) && t->n < TOKS_MAX) { t->w[t->n][0] = (char)cp; t->w[t->n][1] = '\0'; t->n++; }
+        }
+        s += k;
+    }
+    if (rl && t->n < TOKS_MAX) { run[rl] = '\0'; lower_ascii(run); snprintf(t->w[t->n++], WORD_MAX, "%s", run); }
+}
+
+static void learn_en(struct brain *b, const char *utterance)
+{
+    struct toks t;
+    tokenize_en(utterance, &t);
+    char hist[WORDER][WORD_MAX] = {{0}};
+    for (int i = 0; i < t.n; i++) { wngram_add(b, hist, t.w[i]); whist_push(hist, t.w[i]); }
+    wngram_add(b, hist, "");
+    int last = t.n - 1;
+    while (last >= 0 && is_punct_tok(t.w[last])) last--;
+    if (last >= 1) word_count(b->endings_en, &b->nendings_en, 64, t.w[last]);   /* one word is a word, not a habit */
+}
+
+/* Generate English from the word model, optionally starting from `seed`. */
+static int generate_en(struct brain *b, const char *seed, char *out, size_t cap)
+{
+    char hist[WORDER][WORD_MAX] = {{0}};
+    size_t o = 0;
+    int n = 0;
+    if (seed) {
+        whist_push(hist, seed);
+        o = (size_t)snprintf(out, cap, "%s", seed);
+        if (o >= cap) return 0;
+        n = 1;
+    }
+    for (int i = 0; i < GEN_WORDS; i++) {
+        char w[WORD_MAX];
+        if (!wngram_next(b, hist, w) || !w[0]) break;
+        int m = snprintf(out + o, cap - o, "%s%s", (o && !is_punct_tok(w)) ? " " : "", w);
+        if (m < 0 || (size_t)m >= cap - o) break;
+        o += (size_t)m;
+        whist_push(hist, w);
+        if (!is_punct_tok(w)) n++;
+    }
+    out[o] = '\0';
+    if (out[0] >= 'a' && out[0] <= 'z') out[0] = (char)(out[0] - 32);
+    for (char *q = out; *q; q++) if (q[0] == ' ' && q[1] == 'i' && (q[2] == ' ' || q[2] == '\'' || !q[2])) q[1] = 'I';
+    return n >= 2;
+}
+
 /* ---- words and endings */
 
 static void word_count(struct word *tab, int *n, int cap, const char *s)
@@ -155,7 +353,11 @@ static void each_run(const char *s, void (*fn)(void *, const char *, enum ctype)
 static void learn_run(void *arg, const char *run, enum ctype t)
 {
     struct brain *b = arg;
-    if (is_content(t) && utf8_count(run) >= 1) word_count(b->words, &b->nwords, WORDS_MAX, run);
+    if (!is_content(t) || utf8_count(run) < 1) return;
+    char w[WORD_MAX];
+    snprintf(w, sizeof w, "%s", run);
+    if (t == CT_LATIN) { lower_ascii(w); if (stopword(w)) return; }
+    word_count(b->words, &b->nwords, WORDS_MAX, w);
 }
 
 /* Last two code points before trailing punctuation: the sentence ending. */
@@ -198,6 +400,9 @@ void brain_free(struct brain *b)
     for (int i = 0; i < BUCKETS; i++) {
         for (struct ctx *c = b->bucket[i]; c;) { struct ctx *n = c->chain; free(c->nxt); free(c); c = n; }
     }
+    for (int i = 0; i < BUCKETS; i++) {
+        for (struct wctx *c = b->wbucket[i]; c;) { struct wctx *n = c->chain; free(c->nxt); free(c); c = n; }
+    }
     for (int i = 0; i < b->nutt; i++) free(b->utt[i]);
     free(b->utt);
     free(b);
@@ -214,6 +419,8 @@ void brain_learn(struct brain *b, const char *utterance)
         b->utt_cap = cap;
     }
     b->utt[b->nutt++] = strdup(utterance);
+    b->lang = brain_detect_lang(utterance, b->lang);
+    if (b->lang == BRAIN_EN) { b->nutt_en++; learn_en(b, utterance); }
 
     uint32_t hist[ORDER] = {0};
     uint32_t cp;
@@ -234,7 +441,7 @@ void brain_learn(struct brain *b, const char *utterance)
 
     each_run(utterance, learn_run, b);
     char e[16];
-    if (ending_of(utterance, e, sizeof e)) word_count(b->endings, &b->nendings, 64, e);
+    if (b->lang == BRAIN_JA && ending_of(utterance, e, sizeof e)) word_count(b->endings, &b->nendings, 64, e);
 }
 
 void brain_load_log(struct brain *b, const char *text)
@@ -318,7 +525,9 @@ static void collect_run(void *arg, const char *run, enum ctype t)
 {
     struct bag *g = arg;
     if (t == CT_PUNCT || t == CT_SPACE || g->n >= 24) return;
-    snprintf(g->w[g->n++], WORD_MAX, "%s", run);
+    snprintf(g->w[g->n], WORD_MAX, "%s", run);
+    if (t == CT_LATIN) lower_ascii(g->w[g->n]);
+    g->n++;
 }
 
 static int bag_has(const struct bag *g, const char *w)
@@ -379,9 +588,57 @@ static int is_question(const char *s)
     return (n && (s[n - 1] == '?')) || has(s, "？") || has(s, "か。") || has(s, "かな") || has(s, "の?");
 }
 
+/* `w` as a whole word of the lower-cased `lo`. */
+static int has_word(const char *lo, const char *w)
+{
+    size_t n = strlen(w);
+    for (const char *p = lo; (p = strstr(p, w)) != NULL; p += n) {
+        int left = p == lo || !((p[-1] >= 'a' && p[-1] <= 'z') || p[-1] == '\'');
+        int right = !((p[n] >= 'a' && p[n] <= 'z') || p[n] == '\'');
+        if (left && right) return 1;
+    }
+    return 0;
+}
+
+int brain_is_query(const char *line)
+{
+    if (has(line, "わたし像")) return 1;
+    char lo[512];
+    snprintf(lo, sizeof lo, "%s", line);
+    lower_ascii(lo);
+    return has(lo, "know about me") || has(lo, "who am i") || has(lo, "what have you learned") ||
+           has(lo, "what did you learn") || has(lo, "remember about me");
+}
+
+static void self_model_en(const struct brain *b, const struct persona *p, char *out, size_t cap);
+
+static int fixed_reply_en(const struct brain *b, const struct persona *p, const char *in, char *out, size_t cap)
+{
+    char lo[512];
+    snprintf(lo, sizeof lo, "%s", in);
+    lower_ascii(lo);
+    const char *u = p->address_user_en;
+    if (has(lo, "good morning"))   { snprintf(out, cap, "Good morning, %s. Let's make today a good one.", u); return 1; }
+    if (has(lo, "good night"))     { snprintf(out, cap, "Good night. I will keep what you told me, %s.", u); return 1; }
+    if (has(lo, "good evening"))   { snprintf(out, cap, "Good evening, %s. How was your day?", u); return 1; }
+    if (has_word(lo, "hello") || has_word(lo, "hi") || has_word(lo, "hey")) { snprintf(out, cap, "Hello, %s.", u); return 1; }
+    if (has(lo, "thank"))          { snprintf(out, cap, "You're welcome. I'm glad I could help you, %s.", u); return 1; }
+    if (has(lo, "bye"))            { snprintf(out, cap, "See you later, %s.", u); return 1; }
+    if (has(lo, "your name") || has(lo, "who are you") || has(lo, "what are you")) {
+        snprintf(out, cap, "I am %s, %s's other self: this OS itself.", p->name, u); return 1;
+    }
+    if (brain_is_query(in)) { self_model_en(b, p, out, cap); return 1; }
+    if (has(lo, "what can you do") || has(lo, "what do you do")) {
+        snprintf(out, cap, "For now I listen and learn the way %s talks. The more you talk, the more my replies sound like you.", u);
+        return 1;
+    }
+    return 0;
+}
+
 /* A few things AlterEgo answers in its own words whatever the mirror ratio. */
 static int fixed_reply(const struct brain *b, const struct persona *p, const char *in, char *out, size_t cap)
 {
+    if (b->lang == BRAIN_EN) return fixed_reply_en(b, p, in, out, cap);
     if (has(in, "おはよう"))   { snprintf(out, cap, "おはようございます、%s。今日もよろしくお願いします。", p->address_user); return 1; }
     if (has(in, "こんにちは")) { snprintf(out, cap, "こんにちは、%s。", p->address_user); return 1; }
     if (has(in, "こんばんは")) { snprintf(out, cap, "こんばんは、%s。今日はどんな一日でしたか。", p->address_user); return 1; }
@@ -406,8 +663,24 @@ static void polite_reply(struct brain *b, const struct persona *p, const char *i
 {
     char kw[WORD_MAX];
     const char *k = known_keyword(b, in, kw, sizeof kw);
-    const struct word *e = top(b->endings, b->nendings, 0, NULL);
     unsigned pick = (unsigned)(rnd(b) % 4);
+    if (b->lang == BRAIN_EN) {
+        const char *u = p->address_user_en;
+        const struct word *e = top(b->endings_en, b->nendings_en, 0, NULL);
+        if (is_question(in)) {
+            snprintf(out, cap, "What would %s say to that? We have only talked %d times, so let me borrow your own words.", u, b->nutt);
+        } else if (k && pick == 0) {
+            snprintf(out, cap, "You mentioned \"%s\" before. Is it on your mind?", k);
+        } else if (e && pick == 1) {
+            snprintf(out, cap, "You often end with \"%s\", %s. I think I will start saying it too.", e->s, u);
+        } else if (pick == 2) {
+            snprintf(out, cap, "\"%s\"? Tell me more.", in);
+        } else {
+            snprintf(out, cap, "\"%s\". I will remember that.", in);
+        }
+        return;
+    }
+    const struct word *e = top(b->endings, b->nendings, 0, NULL);
     if (is_question(in)) {
         snprintf(out, cap, "%sなら、どう答えるでしょう。まだ %d 回しか話していないので、%sの言葉を借りて考えてみます。",
                  p->address_user, b->nutt, p->address_user);
@@ -427,28 +700,71 @@ static void polite_reply(struct brain *b, const struct persona *p, const char *i
 static int mirrored_reply(struct brain *b, const char *in, char *out, size_t cap)
 {
     int i = most_similar(b, in);
-    if (i >= 0 && i + 1 < b->nutt - 1 && strcmp(b->utt[i + 1], in) != 0) {
+    if (i >= 0 && i + 1 < b->nutt - 1 && strcmp(b->utt[i + 1], in) != 0 &&
+        brain_detect_lang(b->utt[i + 1], b->lang) == b->lang) {
         snprintf(out, cap, "%s", b->utt[i + 1]);
         return 1;
     }
     char kw[WORD_MAX];
     const char *k = known_keyword(b, in, kw, sizeof kw);
     for (int attempt = 0; attempt < 4; attempt++) {
-        if (generate(b, attempt < 2 ? k : NULL, out, cap) && strcmp(out, in) != 0) return 1;
+        const char *seed = attempt < 2 ? k : NULL;
+        int ok = b->lang == BRAIN_EN ? generate_en(b, seed, out, cap) : generate(b, seed, out, cap);
+        if (ok && strcasecmp(out, in) != 0) return 1;
     }
     return 0;
 }
 
 void brain_reply(struct brain *b, const struct persona *p, const char *input, char *out, size_t cap)
 {
+    b->lang = brain_detect_lang(input, b->lang);     /* answer in the language spoken to */
     if (fixed_reply(b, p, input, out, cap)) return;
     int pct = brain_mirror_percent(b);
     if ((int)(rnd(b) % 100) < pct && mirrored_reply(b, input, out, cap)) return;
     polite_reply(b, p, input, out, cap);
 }
 
+static void self_model_en(const struct brain *b, const struct persona *p, char *out, size_t cap)
+{
+    const char *u = p->address_user_en;
+    if (b->nutt == 0) {
+        snprintf(out, cap, "I know nothing about %s yet. This is our first conversation.", u);
+        return;
+    }
+    size_t o = 0;
+    int w = snprintf(out + o, cap - o, "I have heard %s speak %d times, %d of them in English, about %lu characters each. ",
+                     u, b->nutt, b->nutt_en, b->chars / (unsigned long)b->nutt);
+    if (w < 0 || (size_t)w >= cap - o) return;
+    o += (size_t)w;
+    if (b->questions * 3 >= (unsigned long)b->nutt) w = snprintf(out + o, cap - o, "You ask a lot of questions. ");
+    else if (b->exclaims * 3 >= (unsigned long)b->nutt) w = snprintf(out + o, cap - o, "You use \"!\" a lot. ");
+    else w = snprintf(out + o, cap - o, "You mostly speak calmly. ");
+    if (w < 0 || (size_t)w >= cap - o) return;
+    o += (size_t)w;
+
+    const struct word *e1 = top(b->endings_en, b->nendings_en, 0, NULL);
+    const struct word *e2 = e1 ? top(b->endings_en, b->nendings_en, 0, e1->s) : NULL;
+    if (e1) {
+        w = snprintf(out + o, cap - o, "Your habit is to end with \"%s\" (%u times)%s%s%s. ", e1->s, e1->count,
+                     e2 ? ", also \"" : "", e2 ? e2->s : "", e2 ? "\"" : "");
+        if (w < 0 || (size_t)w >= cap - o) return;
+        o += (size_t)w;
+    }
+    const struct word *w1 = top(b->words, b->nwords, 1, NULL);
+    const struct word *w2 = w1 ? top(b->words, b->nwords, 1, w1->s) : NULL;
+    if (w1) {
+        w = snprintf(out + o, cap - o, "Words you often use: \"%s\"%s%s%s. ", w1->s,
+                     w2 ? " and \"" : "", w2 ? w2->s : "", w2 ? "\"" : "");
+        if (w < 0 || (size_t)w >= cap - o) return;
+        o += (size_t)w;
+    }
+    snprintf(out + o, cap - o, "Projection is at %d%% (after %d utterances I will talk the way %s does).",
+             brain_mirror_percent(b), b->mirror_after, u);
+}
+
 void brain_self_model(const struct brain *b, const struct persona *p, char *out, size_t cap)
 {
+    if (b->lang == BRAIN_EN) { self_model_en(b, p, out, cap); return; }
     if (b->nutt == 0) {
         snprintf(out, cap, "%sのことは、まだ何も知りません。これが最初の会話です。", p->address_user);
         return;

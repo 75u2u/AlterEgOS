@@ -12,6 +12,7 @@ void persona_defaults(struct persona *p)
     snprintf(p->name_ja,      PERSONA_STR, "%s", "アルターエゴ");
     snprintf(p->first_person, PERSONA_STR, "%s", "私");
     snprintf(p->address_user, PERSONA_STR, "%s", "わたし");
+    snprintf(p->address_user_en, PERSONA_STR, "%s", "Watashi");
     p->mirror_user = 1;
     p->mirror_after = 30;
 }
@@ -76,6 +77,7 @@ int persona_load(const char *path, struct persona *p)
             else if (strcmp(key, "first_person") == 0) snprintf(p->first_person, PERSONA_STR, "%s", val);
         } else if (strcmp(section, "voice") == 0) {
             if (strcmp(key, "address_user") == 0)      snprintf(p->address_user, PERSONA_STR, "%s", val);
+            else if (strcmp(key, "address_user_en") == 0) snprintf(p->address_user_en, PERSONA_STR, "%s", val);
         } else if (strcmp(section, "learning") == 0) {
             if (strcmp(key, "mirror_user") == 0)       p->mirror_user = strcmp(val, "true") == 0;
             else if (strcmp(key, "mirror_after") == 0) p->mirror_after = atoi(val);
