@@ -51,3 +51,23 @@ CONFIG_NLS_UTF8=y
 CONFIG_RTC_CLASS=y
 CONFIG_RTC_HCTOSYS=y
 CONFIG_RTC_HCTOSYS_DEVICE="rtc0"
+
+# The screen: a framebuffer for the desktop (src/screen) and keyboards and
+# mice through evdev. DRM drivers expose the framebuffer as /dev/fb0 through
+# the fbdev emulation; virtio-gpu / virtio-input are what QEMU offers.
+CONFIG_VT=y
+CONFIG_VT_CONSOLE=y
+CONFIG_FB=y
+CONFIG_FB_DEVICE=y
+CONFIG_FRAMEBUFFER_CONSOLE=y
+CONFIG_DRM=y
+CONFIG_DRM_FBDEV_EMULATION=y
+CONFIG_DRM_VIRTIO_GPU=y
+CONFIG_INPUT=y
+CONFIG_INPUT_EVDEV=y
+CONFIG_INPUT_KEYBOARD=y
+CONFIG_INPUT_MOUSE=y
+CONFIG_VIRTIO_INPUT=y
+CONFIG_HID=y
+CONFIG_HID_GENERIC=y
+CONFIG_USB_HID=y

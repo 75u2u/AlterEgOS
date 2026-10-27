@@ -2,3 +2,5 @@ build/
 src/init/alteregos-init
 src/agent/alterego
 *.o
+src/screen/alterego-screen
+src/screen/screen-test

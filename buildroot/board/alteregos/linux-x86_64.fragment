@@ -42,3 +42,8 @@ CONFIG_SATA_AHCI=y
 
 # PC real-time clock (QEMU q35 has one too)
 CONFIG_RTC_DRV_CMOS=y
+
+# The screen on a PC and under QEMU -vga std (bochs); PS/2 mouse for QEMU
+CONFIG_DRM_BOCHS=y
+CONFIG_SERIO_I8042=y
+CONFIG_MOUSE_PS2=y

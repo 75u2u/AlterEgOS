@@ -602,7 +602,7 @@ static int has_word(const char *lo, const char *w)
 
 int brain_is_query(const char *line)
 {
-    if (has(line, "わたし像")) return 1;
+    if (has(line, "わたし像") || has(line, "わたしぞう")) return 1;      /* kana too: the screen's IME has no kanji */
     char lo[512];
     snprintf(lo, sizeof lo, "%s", line);
     lower_ascii(lo);
@@ -647,7 +647,7 @@ static int fixed_reply(const struct brain *b, const struct persona *p, const cha
     if (has(in, "名前") || has(in, "だれ") || has(in, "誰")) {
         snprintf(out, cap, "%sです。%sのもう一人の自分、この OS そのものです。", p->name_ja, p->address_user); return 1;
     }
-    if (has(in, "わたし像") || has(in, "覚えて") || has(in, "学習") || has(in, "何を知って")) {
+    if (has(in, "わたし像") || has(in, "わたしぞう") || has(in, "覚えて") || has(in, "学習") || has(in, "何を知って")) {
         brain_self_model(b, p, out, cap); return 1;
     }
     if (has(in, "何ができる") || has(in, "なにができる") || has(in, "できること")) {
