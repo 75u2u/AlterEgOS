@@ -45,7 +45,7 @@ AlterEgo の頭は本体に入っていて、ネットワークも API キーも
 次に起動したときはそこから続きになる(`alterego/personality.txt` に、いまの育ち具合・性格・記憶が書いてある)。
 有線 LAN を挿しておけば DHCP でアドレスを取るが、今はまだ使い道がない。
 
-**QEMU で試す**(同梱の `run-qemu.sh` は展開先でそのまま動く。`./run-qemu.sh` で端末の中、`./run-qemu.sh x86_64 --gui` でデスクトップをウィンドウに表示、`./run-qemu.sh x86_64 --efi --gui` で UEFI 起動。--efi は覚えたことがイメージに残る):
+**QEMU で試す**(同梱の `run-qemu.sh` は展開先でそのまま動く。`./run-qemu.sh` でデスクトップがウィンドウに出る。`./run-qemu.sh x86_64 --efi` は USB イメージを UEFI 起動する実機と同じ道筋で、覚えたことがイメージに残る。`--serial` を足すとウィンドウなしで端末の中で会話):
 
 ```sh
 sudo apt install qemu-system-x86 ovmf
@@ -64,8 +64,8 @@ sudo apt install build-essential git curl bc bison flex cpio rsync file unzip \
     libncurses-dev libssl-dev libelf-dev python3 qemu-system-x86 qemu-system-arm
 
 scripts/build.sh x86_64        # 初回は 30〜60 分(ツールチェインとカーネル)
-scripts/run-qemu.sh x86_64     # 端末の中で会話。終了は Ctrl-A, X
-scripts/run-qemu.sh x86_64 --gui   # デスクトップをウィンドウに表示
+scripts/run-qemu.sh x86_64          # デスクトップをウィンドウに表示(端末にはカーネルログ)
+scripts/run-qemu.sh x86_64 --serial # ウィンドウなしで端末の中で会話。終了は Ctrl-A, X
 ```
 
 aarch64 は引数を `aarch64` に変えるだけ。`src/` だけ直したあとは

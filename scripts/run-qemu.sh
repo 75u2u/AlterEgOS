@@ -1,23 +1,24 @@
 #!/usr/bin/env bash
-# Boot the images built by scripts/build.sh in QEMU, console on this terminal.
+# Boot the images built by scripts/build.sh in QEMU. By default a window opens
+# with the screen (the desktop: chat and shell windows, mouse, kana input),
+# and this terminal carries the kernel log.
 #
-#   scripts/run-qemu.sh x86_64          # kernel + initramfs, serial console
+#   scripts/run-qemu.sh x86_64            # the desktop in a QEMU window
 #   scripts/run-qemu.sh aarch64
-#   scripts/run-qemu.sh x86_64 --gui    # with a screen: the desktop (chat and
-#   scripts/run-qemu.sh aarch64 --gui   # shell windows, mouse) in a QEMU window
-#   scripts/run-qemu.sh x86_64 --efi    # the USB image through UEFI firmware,
-#                                       # the way a real PC boots it (needs ovmf);
-#                                       # add --gui to see its screen too
+#   scripts/run-qemu.sh x86_64 --efi      # the USB image through UEFI firmware,
+#                                         # the way a real PC boots it (needs ovmf)
+#   scripts/run-qemu.sh x86_64 --serial   # no window: the agent talks on the
+#                                         # serial console in this terminal
 #
 # Also works standalone from an unpacked Release archive (the images are then
 # looked up next to this script instead of under build/<arch>/images).
 #
-# Quit with Ctrl-A then X on the serial console (plain mode), or close the
-# QEMU window (--gui). In the plain mode the agent talks on the serial
-# console. With --gui the kernel console is the screen, so init starts the
-# desktop there and the serial line only carries the kernel log. --efi
-# without --gui runs headless: the desktop still starts on the VGA screen
-# you cannot see, like on a real PC.
+# Quit by closing the QEMU window, or with Ctrl-A then X on this terminal.
+# With a window the kernel console is the screen, so init starts the desktop
+# there. With --serial the agent talks on the serial console instead; --efi
+# --serial runs the USB image headless, with the desktop on a VGA screen you
+# cannot see. QEMU_DISPLAY picks the window backend (gtk, sdl, ...); without
+# it the first one this QEMU supports is used.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -33,21 +34,34 @@ else
 fi
 MEM="${MEM:-1024}"
 EFI=0
-GUI=0
+GUI=1
 shift || true
 for opt in "$@"; do
     case "$opt" in
         --efi) EFI=1 ;;
         --gui) GUI=1 ;;
-        *) echo "usage: $0 {x86_64|aarch64} [--efi] [--gui]" >&2; exit 2 ;;
+        --serial|--no-gui|--nographic) GUI=0 ;;
+        *) echo "usage: $0 {x86_64|aarch64} [--efi] [--serial]" >&2; exit 2 ;;
     esac
 done
+QEMU="qemu-system-$ARCH"
+command -v "$QEMU" >/dev/null || { echo "$QEMU not found (apt install qemu-system-x86 qemu-system-arm)" >&2; exit 2; }
 
-# --gui: a window with the screen, keyboard and an absolute-position mouse
+# Which window backend this QEMU was built with: prefer gtk, then sdl.
+pick_display() {
+    local want have
+    have="$("$QEMU" -display help 2>/dev/null || true)"
+    for want in gtk sdl; do
+        if printf '%s\n' "$have" | grep -qx "$want"; then echo "$want"; return; fi
+    done
+    echo "gtk"
+}
+
+# Window mode: the screen, keyboard and an absolute-position mouse
 # (virtio-tablet, so the pointer follows the host's without grabbing it);
 # the serial console stays on this terminal for the kernel log.
 if [ "$GUI" = 1 ]; then
-    DISPLAY_ARGS=(-display "${QEMU_DISPLAY:-gtk}" -serial mon:stdio
+    DISPLAY_ARGS=(-display "${QEMU_DISPLAY:-$(pick_display)}" -serial mon:stdio
                   -device virtio-keyboard-pci -device virtio-tablet-pci)
     CONSOLE_X86="console=ttyS0 console=tty0"
     CONSOLE_ARM="console=ttyAMA0 console=tty0"
@@ -65,7 +79,7 @@ if [ "$EFI" = 1 ]; then
         [ -f "$f" ] && OVMF="$f"
     done
     [ -n "$OVMF" ] || { echo "OVMF not found (apt install ovmf)" >&2; exit 2; }
-    exec qemu-system-x86_64 \
+    exec "$QEMU" \
         -machine q35,accel=kvm:tcg -cpu max -m "$MEM" -smp 2 \
         -bios "$OVMF" \
         -drive file="$IMG/alteregos-x86_64.img",format=raw,if=virtio \
@@ -76,7 +90,7 @@ fi
 
 case "$ARCH" in
     x86_64)
-        exec qemu-system-x86_64 \
+        exec "$QEMU" \
             -machine q35,accel=kvm:tcg -cpu max -m "$MEM" -smp 2 \
             -kernel "$IMG/bzImage" -initrd "$IMG/rootfs.cpio.gz" \
             -append "$CONSOLE_X86 init=/sbin/init quiet" \
@@ -85,7 +99,7 @@ case "$ARCH" in
             "${DISPLAY_ARGS[@]}" ${QEMU_EXTRA:-}
         ;;
     aarch64)
-        exec qemu-system-aarch64 \
+        exec "$QEMU" \
             -machine virt -cpu cortex-a72 -m "$MEM" -smp 2 \
             -kernel "$IMG/Image" -initrd "$IMG/rootfs.cpio.gz" \
             -append "$CONSOLE_ARM init=/sbin/init quiet" \
@@ -94,5 +108,5 @@ case "$ARCH" in
             "${DISPLAY_ARGS[@]}" ${QEMU_EXTRA:-}
         ;;
     *)
-        echo "usage: $0 {x86_64|aarch64} [--efi] [--gui]" >&2; exit 2 ;;
+        echo "usage: $0 {x86_64|aarch64} [--efi] [--serial]" >&2; exit 2 ;;
 esac
