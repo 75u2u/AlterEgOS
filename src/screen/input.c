@@ -11,18 +11,23 @@
 #include "input.h"
 
 #define BITS(n) (((n) + 7) / 8)
+
+/* musl declares ioctl's request as int, and the EVIOCG* read requests have
+ * the top bit set, so pass them through an int (the kernel reads the low
+ * 32 bits either way). */
+static int evioctl(int fd, unsigned long req, void *arg) { return ioctl(fd, (int)req, arg); }
 static int bit(const unsigned char *b, int i) { return (b[i / 8] >> (i % 8)) & 1; }
 
 static enum input_kind classify(int fd, struct input_dev *d)
 {
     unsigned char ev[BITS(EV_MAX + 1)] = {0}, key[BITS(KEY_MAX + 1)] = {0}, rel[BITS(REL_MAX + 1)] = {0}, abs[BITS(ABS_MAX + 1)] = {0};
-    if (ioctl(fd, EVIOCGBIT(0, sizeof ev), ev) < 0) return DEV_NONE;
-    if (bit(ev, EV_KEY)) ioctl(fd, EVIOCGBIT(EV_KEY, sizeof key), key);
-    if (bit(ev, EV_REL)) ioctl(fd, EVIOCGBIT(EV_REL, sizeof rel), rel);
-    if (bit(ev, EV_ABS)) ioctl(fd, EVIOCGBIT(EV_ABS, sizeof abs), abs);
+    if (evioctl(fd, EVIOCGBIT(0, sizeof ev), ev) < 0) return DEV_NONE;
+    if (bit(ev, EV_KEY)) evioctl(fd, EVIOCGBIT(EV_KEY, sizeof key), key);
+    if (bit(ev, EV_REL)) evioctl(fd, EVIOCGBIT(EV_REL, sizeof rel), rel);
+    if (bit(ev, EV_ABS)) evioctl(fd, EVIOCGBIT(EV_ABS, sizeof abs), abs);
     if (bit(abs, ABS_X) && bit(abs, ABS_Y) && (bit(key, BTN_LEFT) || bit(key, BTN_TOUCH))) {
         struct input_absinfo ax, ay;
-        if (ioctl(fd, EVIOCGABS(ABS_X), &ax) == 0 && ioctl(fd, EVIOCGABS(ABS_Y), &ay) == 0) {
+        if (evioctl(fd, EVIOCGABS(ABS_X), &ax) == 0 && evioctl(fd, EVIOCGABS(ABS_Y), &ay) == 0) {
             d->ax_min = ax.minimum; d->ax_max = ax.maximum;
             d->ay_min = ay.minimum; d->ay_max = ay.maximum;
             if (d->ax_max > d->ax_min && d->ay_max > d->ay_min) return DEV_TABLET;
