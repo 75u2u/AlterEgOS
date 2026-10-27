@@ -50,9 +50,9 @@ static void test_term(void)
     struct term t;
     char row[256];
     term_init(&t, 10, 3);
-    feed(&t, "わたし> hi\r\n");
+    feed(&t, "ゆうや> hi\r\n");
     term_row(&t, 0, row, sizeof row);
-    CHECK(strcmp(row, "わたし> hi") == 0, "row0 '%s'", row);
+    CHECK(strcmp(row, "ゆうや> hi") == 0, "row0 '%s'", row);
     CHECK(t.cx == 0 && t.cy == 1, "cursor %d,%d", t.cx, t.cy);
     /* backspace over a wide character, as the tty echoes it: \b \b */
     feed(&t, "あい\b \b");
