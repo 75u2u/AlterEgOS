@@ -12,11 +12,13 @@ all: host
 host:
 	$(MAKE) -C src/init
 	$(MAKE) -C src/agent
+	$(MAKE) -C src/screen
 
 # Syntax-only check, also for a cross compiler: make check CC=aarch64-linux-gnu-gcc
 check:
 	$(MAKE) -C src/init check
 	$(MAKE) -C src/agent check
+	$(MAKE) -C src/screen check
 
 # Full OS images via Buildroot.
 x86_64 aarch64:
@@ -39,3 +41,4 @@ run-efi:
 clean:
 	$(MAKE) -C src/init clean
 	$(MAKE) -C src/agent clean
+	$(MAKE) -C src/screen clean

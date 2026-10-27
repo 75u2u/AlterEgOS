@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  # Fast: compile PID 1 and the agent natively and cross, run the agent stub.
+  # Fast: compile PID 1, the agent and the screen natively and cross, run them on the host.
   # The full Buildroot image build is too slow for every push; it runs by hand
   # (scripts/build.sh) until there is a cached toolchain to reuse here.
   host-build:
@@ -46,6 +46,26 @@ jobs:
           echo "$out" | grep -q 'AlterEgo: Good morning, Watashi\. I am AlterEgo\.'
           echo "$out" | grep -q 'AlterEgo: おはようございます、わたし。今日も'
           echo "$out" | grep -q 'AlterEgo: また後で。'
+      - name: Screen checks (terminal emulator, romaji to kana, font)
+        run: make -C src/screen test
+      - name: Screen smoke test (headless desktop, typed kana reaches the agent)
+        run: |
+          state=$(mktemp -d)
+          ALTEREGO_HEADLESS=1024x768 ALTEREGO_SNAPSHOT="$state/shot.ppm" \
+          ALTEREGO_SCRIPT=$'konnnichiha\nkyouhatsukaretanaa\nwatashizou\n' ALTEREGO_SCRIPT_KANA=1 \
+          ALTEREGO_FONT=src/screen/font.hex ALTEREGO_AGENT="$PWD/src/agent/alterego" ALTEREGO_SHELL=/bin/sh \
+          ALTEREGO_STATE="$state" ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml \
+          timeout 60 ./src/screen/alterego-screen
+          cat "$state/utterances.txt"
+          test "$(wc -l < "$state/utterances.txt")" = 2        # こんにちは, きょうはつかれたなあ (わたしぞう is a query)
+          grep -q '^こんにちは$' "$state/utterances.txt"
+          grep -q '2 回聞きました' "$state/self_model.txt"
+          python3 scripts/ppm2png.py "$state/shot.ppm" screenshot.png
+      - name: Upload the desktop screenshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshot
+          path: screenshot.png
       - name: Init refuses to run outside PID 1
         run: |
           if ./src/init/alteregos-init; then echo "init should have refused"; exit 1; fi

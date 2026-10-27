@@ -1,6 +1,6 @@
 ################################################################################
 #
-# alteregos: PID 1 and the agent, from this repository's src/
+# alteregos: PID 1, the agent and the screen, from this repository's src/
 #
 ################################################################################
 
@@ -20,11 +20,14 @@ ALTEREGOS_GIT_VERSION = $(shell git -C $(BR2_EXTERNAL_ALTEREGOS_PATH) describe -
 define ALTEREGOS_BUILD_CMDS
 	$(ALTEREGOS_MAKE_ENV) $(MAKE) -C $(@D)/init
 	$(ALTEREGOS_MAKE_ENV) $(MAKE) -C $(@D)/agent
+	$(ALTEREGOS_MAKE_ENV) $(MAKE) -C $(@D)/screen
 endef
 
 define ALTEREGOS_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(@D)/init/alteregos-init $(TARGET_DIR)/sbin/init
 	$(INSTALL) -D -m 0755 $(@D)/agent/alterego $(TARGET_DIR)/usr/bin/alterego
+	$(INSTALL) -D -m 0755 $(@D)/screen/alterego-screen $(TARGET_DIR)/usr/bin/alterego-screen
+	$(INSTALL) -D -m 0644 $(@D)/screen/font.hex $(TARGET_DIR)/usr/share/alterego/font.hex
 endef
 
 $(eval $(generic-package))

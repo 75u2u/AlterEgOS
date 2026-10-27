@@ -5,8 +5,9 @@
  * agent's job. PID 1 only:
  *   1. mounts the pseudo filesystems the agent needs,
  *   2. brings up the loopback interface and sets the hostname,
- *   3. spawns the agent on the console, an escape shell on tty2, and a
- *      DHCP client on eth0 when there is one,
+ *   3. spawns the agent on the console (or, when the console is a screen,
+ *      the desktop that runs the agent and a shell in windows), an escape
+ *      shell on tty2, and a DHCP client on eth0 when there is one,
  *   4. reaps orphans and respawns the agent (and the shell) when they die,
  *   5. shuts the machine down cleanly on SIGTERM / SIGUSR1 / SIGINT.
  *
@@ -39,6 +40,8 @@
 
 #define HOSTNAME        "alteregos"
 #define AGENT_PATH      "/usr/bin/alterego"
+#define SCREEN_PATH     "/usr/bin/alterego-screen"
+#define SCREEN_TTY      "/dev/tty1"
 #define AGENT_CONSOLE   "/dev/console"
 #define SHELL_PATH      "/bin/sh"
 #define SHELL_TTY       "/dev/tty2"
@@ -176,7 +179,7 @@ static void set_identity(void)
 /* ------------------------------------------------------------------------ */
 /* 3. children                                                                */
 
-enum child_kind { CHILD_AGENT = 0, CHILD_SHELL = 1, CHILD_DHCP = 2, CHILD_COUNT };
+enum child_kind { CHILD_AGENT = 0, CHILD_SHELL = 1, CHILD_DHCP = 2, CHILD_SCREEN = 3, CHILD_COUNT };
 
 #define CHILD_ARGV_MAX 8
 
@@ -197,6 +200,8 @@ static struct child g_children[CHILD_COUNT] = {
     /* busybox udhcpc in the foreground (it keeps renewing the lease); its
      * default script configures the interface and writes /etc/resolv.conf */
     [CHILD_DHCP]  = { "dhcp",  DHCP_PATH,  NULL, { DHCP_PATH, "-i", DHCP_IF, "-f", NULL }, 0, {0}, 0, 0 },
+    /* the desktop on the framebuffer; it starts the agent and a shell itself */
+    [CHILD_SCREEN] = { "screen", SCREEN_PATH, SCREEN_TTY, { SCREEN_PATH, NULL }, 0, {0}, 0, 0 },
 };
 
 /* Open `tty`, make it the controlling terminal and stdio of the calling
@@ -274,6 +279,11 @@ static void on_child_exit(struct child *c, int status)
     if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
         logf_("%s: %s not available, not respawning", c->name, c->tty ? c->tty : "/dev/null");
         c->next_spawn = (time_t)-1;
+        if (c == &g_children[CHILD_SCREEN] && g_children[CHILD_AGENT].next_spawn == (time_t)-1) {
+            /* no framebuffer after all: the agent talks on the console instead */
+            logf_("no screen, starting the agent on %s", g_children[CHILD_AGENT].tty);
+            g_children[CHILD_AGENT].next_spawn = now;
+        }
         return;
     }
     if (WIFSIGNALED(status)) {
@@ -375,6 +385,15 @@ int alteregos_init_main(void)
     if (!have_if(DHCP_IF)) {
         logf_("no %s, not starting the DHCP client", DHCP_IF);
         g_children[CHILD_DHCP].next_spawn = (time_t)-1;
+    }
+    /* A screen (console on a VT) gets the desktop, which runs the agent in a
+     * window; the agent itself is started here only if the desktop finds no
+     * framebuffer (it exits 127). A serial console gets the agent directly. */
+    if (strcmp(g_children[CHILD_AGENT].tty, SCREEN_TTY) == 0 && access(SCREEN_PATH, X_OK) == 0) {
+        logf_("console is a screen, starting the desktop on %s", SCREEN_TTY);
+        g_children[CHILD_AGENT].next_spawn = (time_t)-1;
+    } else {
+        g_children[CHILD_SCREEN].next_spawn = (time_t)-1;
     }
     for (int i = 0; i < CHILD_COUNT; i++) {
         if (g_children[i].next_spawn != (time_t)-1) spawn(&g_children[i]);
