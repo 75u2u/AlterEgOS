@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install cross compiler
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu libcurl4-openssl-dev
       - name: Build (x86_64, host)
         run: make host
       - name: Check (aarch64, cross)
@@ -24,6 +24,7 @@ jobs:
           out=$(printf 'テスト\n疲れたなあ\n眠いなあ\nexit\n' | ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml ./src/agent/alterego)
           echo "$out"
           echo "$out" | grep -q 'AlterEgo: おはようございます、わたし'
+          echo "$out" | grep -q 'API キーが無い'
           echo "$out" | grep -q '「テスト」ですね'
           echo "$out" | grep -q '口癖.*「なあ」'
       - name: Init refuses to run outside PID 1

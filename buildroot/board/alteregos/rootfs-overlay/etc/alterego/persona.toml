@@ -25,6 +25,14 @@ learn = ["性格", "口癖", "価値観"]
 after_every_turn = true      # 1 往復ごとに振り返って、学んだことを記憶に足す
 keep_identity = ["name", "name_ja", "never"]   # ここだけは投影で変えない
 
+[model]
+# 会話は Claude Opus 5.5、1 往復ごとの振り返り(わたし像の更新)は安い Haiku 5.5。
+# API キーはここには書かない(EFI パーティションの alterego/api_key、起動オプション alterego.key=、または起動後に入力)
+chat = "claude-opus-5-5"
+reflect = "claude-haiku-5-5"
+effort = "low"          # 会話の深さ。low / medium / high
+max_tokens = 1024
+
 [behavior]
 greet_on_boot = true
 idle = "待機中はログの確認や記憶の整理などの小さな作業"

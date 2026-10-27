@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "persona.h"
@@ -12,6 +13,11 @@ void persona_defaults(struct persona *p)
     snprintf(p->first_person, PERSONA_STR, "%s", "私");
     snprintf(p->address_user, PERSONA_STR, "%s", "わたし");
     p->mirror_user = 1;
+    snprintf(p->model,         PERSONA_STR, "%s", "claude-opus-5-5");
+    snprintf(p->reflect_model, PERSONA_STR, "%s", "claude-haiku-5-5");
+    snprintf(p->effort, sizeof p->effort, "%s", "low");
+    p->max_tokens = 1024;
+    p->raw = NULL;
 }
 
 static char *trim(char *s)
@@ -42,8 +48,8 @@ static int parse_kv(char *line, char **key, char **val)
     char *hash = strchr(v, '#');
     if (hash) *hash = '\0';
     v = trim(v);
-    if (strcmp(v, "true") != 0 && strcmp(v, "false") != 0) return 0;
-    *val = v;
+    if (*v == '\0' || *v == '[') return 0;      /* arrays are not read here */
+    *val = v;                                   /* true / false / a number */
     return 1;
 }
 
@@ -52,6 +58,15 @@ int persona_load(const char *path, struct persona *p)
     FILE *f = fopen(path, "r");
     if (!f) return -1;
     persona_defaults(p);
+
+    /* Keep the whole file for the system prompt (bounded; it is small). */
+    char *raw = malloc(PERSONA_RAW_MAX);
+    if (raw) {
+        size_t n = fread(raw, 1, PERSONA_RAW_MAX - 1, f);
+        raw[n] = '\0';
+        p->raw = raw;
+        rewind(f);
+    }
 
     char section[32] = "";
     char line[512];
@@ -76,6 +91,11 @@ int persona_load(const char *path, struct persona *p)
             if (strcmp(key, "address_user") == 0)      snprintf(p->address_user, PERSONA_STR, "%s", val);
         } else if (strcmp(section, "learning") == 0) {
             if (strcmp(key, "mirror_user") == 0)       p->mirror_user = strcmp(val, "true") == 0;
+        } else if (strcmp(section, "model") == 0) {
+            if (strcmp(key, "chat") == 0)              snprintf(p->model, PERSONA_STR, "%s", val);
+            else if (strcmp(key, "reflect") == 0)      snprintf(p->reflect_model, PERSONA_STR, "%s", val);
+            else if (strcmp(key, "effort") == 0)       snprintf(p->effort, sizeof p->effort, "%s", val);
+            else if (strcmp(key, "max_tokens") == 0)   p->max_tokens = atoi(val);
         }
     }
     fclose(f);

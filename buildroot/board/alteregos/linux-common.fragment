@@ -37,3 +37,17 @@ CONFIG_IKCONFIG_PROC=y
 CONFIG_SECCOMP=y
 CONFIG_NAMESPACES=y
 CONFIG_CGROUPS=y
+
+# the EFI System Partition: the agent keeps its API key and what it learned
+# in alterego/ on the FAT partition it booted from
+CONFIG_VFAT_FS=y
+CONFIG_FAT_DEFAULT_UTF8=y
+CONFIG_NLS=y
+CONFIG_NLS_CODEPAGE_437=y
+CONFIG_NLS_ISO8859_1=y
+CONFIG_NLS_UTF8=y
+
+# a correct clock at boot, or TLS certificate checks fail
+CONFIG_RTC_CLASS=y
+CONFIG_RTC_HCTOSYS=y
+CONFIG_RTC_HCTOSYS_DEVICE="rtc0"

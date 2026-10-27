@@ -8,11 +8,14 @@ ALTEREGOS_VERSION = local
 ALTEREGOS_SITE = $(BR2_EXTERNAL_ALTEREGOS_PATH)/../src
 ALTEREGOS_SITE_METHOD = local
 ALTEREGOS_LICENSE = TBD
+ALTEREGOS_DEPENDENCIES = libcurl ca-certificates
 
 ALTEREGOS_MAKE_ENV = $(TARGET_MAKE_ENV) \
 	CC="$(TARGET_CC)" \
 	CFLAGS="$(TARGET_CFLAGS) -DALTEREGOS_VERSION=\\\"$(ALTEREGOS_GIT_VERSION)\\\"" \
-	LDFLAGS="$(TARGET_LDFLAGS)"
+	LDFLAGS="$(TARGET_LDFLAGS)" \
+	PKG_CONFIG="$(PKG_CONFIG_HOST_BINARY)" \
+	STATIC=1
 
 # `git describe` of the repository, or "unknown" outside a checkout.
 ALTEREGOS_GIT_VERSION = $(shell git -C $(BR2_EXTERNAL_ALTEREGOS_PATH) describe --always --dirty 2>/dev/null || echo unknown)

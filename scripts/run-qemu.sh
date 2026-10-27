@@ -9,6 +9,11 @@
 # Also works standalone from an unpacked Release archive (the images are then
 # looked up next to this script instead of under build/<arch>/images).
 #
+# ALTEREGO_API_KEY=sk-... in the environment is passed to the kernel command
+# line (alterego.key=) so the agent can talk in the plain mode, where there
+# is no disk to keep it on. In --efi mode put it on the image instead:
+# scripts/set-api-key.sh.
+#
 # Quit with Ctrl-A then X. In the plain mode the agent talks on the serial
 # console. In --efi mode the agent talks on the VGA screen (tty1) like on a
 # real PC, so pass QEMU_EXTRA="-display gtk" to see and type to it; the serial
@@ -27,6 +32,8 @@ else
     IMG="$HERE/../build/$ARCH/images"   # source tree after scripts/build.sh
 fi
 MODE="${2:-}"
+KEYARG=""
+[ -n "${ALTEREGO_API_KEY:-}" ] && KEYARG=" alterego.key=$ALTEREGO_API_KEY"
 MEM="${MEM:-1024}"
 
 if [ "$MODE" = "--efi" ]; then
@@ -51,7 +58,7 @@ case "$ARCH" in
         exec qemu-system-x86_64 \
             -machine q35,accel=kvm:tcg -cpu max -m "$MEM" -smp 2 \
             -kernel "$IMG/bzImage" -initrd "$IMG/rootfs.cpio.gz" \
-            -append "console=ttyS0 init=/sbin/init quiet" \
+            -append "console=ttyS0 init=/sbin/init quiet$KEYARG" \
             -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
             -device virtio-rng-pci \
             -nographic ${QEMU_EXTRA:-}
@@ -60,7 +67,7 @@ case "$ARCH" in
         exec qemu-system-aarch64 \
             -machine virt -cpu cortex-a72 -m "$MEM" -smp 2 \
             -kernel "$IMG/Image" -initrd "$IMG/rootfs.cpio.gz" \
-            -append "console=ttyAMA0 init=/sbin/init quiet" \
+            -append "console=ttyAMA0 init=/sbin/init quiet$KEYARG" \
             -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
             -device virtio-rng-pci \
             -nographic ${QEMU_EXTRA:-}
