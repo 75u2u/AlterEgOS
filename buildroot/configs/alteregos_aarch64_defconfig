@@ -4,6 +4,8 @@ BR2_cortex_a72=y
 
 BR2_TOOLCHAIN_BUILDROOT_MUSL=y
 BR2_TOOLCHAIN_BUILDROOT_CXX=y
+# Everything linked static: no shared-library setup to break
+BR2_STATIC_LIBS=y
 
 # ccache: the second build of the toolchain and kernel is minutes, not an hour
 BR2_CCACHE=y

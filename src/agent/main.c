@@ -1,13 +1,12 @@
 /*
- * AlterEgo agent, day-1 stub.
+ * AlterEgo agent.
  *
- * On day 1 the agent only proves the plumbing: PID 1 started it on the
- * console, the persona file is readable, and a line typed by the user comes
- * back. The one thing it already does for real is the start of
- * self-projection: every turn it observes how the user ("わたし") talks and
- * keeps what it learned (learn.c). Days 2-4 replace the echo loop with the
- * network, the model, memory and the syscall/exec tools; this file keeps the
- * same entry point so init never has to change.
+ * PID 1 starts it on the console. It reads the persona, rebuilds its brain
+ * from the utterance log in the store (the EFI partition it booted from),
+ * greets, and talks. Every line the user types is learned first, then
+ * answered by AlterEgo's own engine (brain.c): early on in its own polite
+ * voice, more and more in the user's as the log grows. No external model,
+ * no network.
  */
 
 #define _GNU_SOURCE
@@ -18,31 +17,40 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "learn.h"
+#include "brain.h"
 #include "persona.h"
+#include "store.h"
+
+#define LOG_FILE   "utterances.txt"
+#define SELF_FILE  "self_model.txt"
 
 /* One line to the kernel log so a serial console, dmesg or the CI boot test
  * can see the agent came up even when its own tty is the VGA screen.
  * Silently does nothing where /dev/kmsg is unavailable (host runs). */
-static void kmsg_up(const struct persona *p)
+static void kmsg_up(const struct persona *p, int turns)
 {
     int fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
     if (fd < 0) return;
     const char *tty = ttyname(STDIN_FILENO);
-    dprintf(fd, "<6>alterego: up, persona %s, talking on %s\n", p->name, tty ? tty : "?");
+    dprintf(fd, "<6>alterego: up, persona %s, talking on %s, %d utterances remembered\n",
+            p->name, tty ? tty : "?", turns);
     close(fd);
 }
 
-static void greet(const struct persona *p)
+static void greet(const struct persona *p, const struct brain *b, const char *store)
 {
-    /* The greeting is the persona's job, not init's: it is the first thing
-     * that should feel like AlterEgo rather than like a boot log. */
     printf("\n%s: おはようございます、%s。%sです。\n", p->name, p->address_user, p->name_ja);
-    if (p->mirror_user)
-        printf("%s: 話すたびに%sの性格と口癖を覚えて、%sに近づいていきます。\n",
-               p->name, p->address_user, p->address_user);
-    printf("%s: まだ会話はできません。今は入力をそのまま返すだけです。\n", p->name);
-    printf("%s: 「exit」で終わると、initが私をもう一度起動します。\n\n", p->name);
+    if (p->mirror_user) {
+        if (brain_turns(b) > 0)
+            printf("%s: これまでに %d 回分の%sの言葉を覚えています。投影は %d%% です。\n",
+                   p->name, brain_turns(b), p->address_user, brain_mirror_percent(b));
+        else
+            printf("%s: 話すたびに%sの性格と口癖を覚えて、%sに近づいていきます。\n",
+                   p->name, p->address_user, p->address_user);
+    }
+    if (!store)
+        printf("%s: 書き込める場所が無いので、今日覚えたことは次に起きたら忘れてしまいます。\n", p->name);
+    printf("%s: 「わたし像」と聞くと覚えたことを話します。「exit」で終わると、initが私をもう一度起動します。\n\n", p->name);
     fflush(stdout);
 }
 
@@ -56,13 +64,19 @@ int main(void)
         persona_defaults(&p);
     }
 
-    struct learn l;
-    learn_init(&l);
+    struct brain *b = brain_new(p.mirror_after);
+    if (!b) return 1;
+    const char *store = store_open();
+    if (store) {
+        char *log = store_read_all(LOG_FILE);
+        if (log) { brain_load_log(b, log); free(log); }
+    }
 
     setvbuf(stdout, NULL, _IOLBF, 0);
-    kmsg_up(&p);
-    greet(&p);
+    kmsg_up(&p, brain_turns(b));
+    greet(&p, b, store);
 
+    char reply[2048];
     char *line = NULL;
     size_t cap = 0;
     for (;;) {
@@ -70,21 +84,30 @@ int main(void)
         fflush(stdout);
         ssize_t n = getline(&line, &cap, stdin);
         if (n < 0) break;                      /* EOF: let init respawn us */
-        if (n > 0 && line[n - 1] == '\n') line[n - 1] = '\0';
+        while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = '\0';
         if (strcmp(line, "exit") == 0) break;
         if (line[0] == '\0') continue;
-        if (p.mirror_user) learn_observe(&l, line);
-        printf("%s: 「%s」ですね。\n", p.name, line);
+
+        /* Asking about the self-model is a command to AlterEgo, not a
+         * sample of how わたし talks: answer it without learning it. */
+        if (p.mirror_user && !strstr(line, "わたし像")) {
+            brain_learn(b, line);
+            if (store) {
+                store_append(LOG_FILE, line);
+                brain_self_model(b, &p, reply, sizeof reply);
+                store_write(SELF_FILE, reply);
+            }
+        }
+        brain_reply(b, &p, line, reply, sizeof reply);
+        printf("%s: %s\n", p.name, reply);
     }
     free(line);
 
-    /* What it learned about わたし this time. Until there is a writable
-     * volume (day 3) this is lost with the process, and it says so. */
-    int count = 0;
-    const char *habit = p.mirror_user ? learn_habit(&l, &count) : NULL;
-    if (habit)
-        printf("%s: 今日は%sの口癖は「%s」だと覚えました(%d回)。まだ保存はできないので、次に起きたら忘れてしまいます。\n",
-               p.name, p.address_user, habit, count);
+    if (p.mirror_user && brain_turns(b) > 0) {
+        brain_self_model(b, &p, reply, sizeof reply);
+        printf("%s: %s\n", p.name, reply);
+    }
     printf("%s: また後で。\n", p.name);
+    brain_free(b);
     return 0;
 }

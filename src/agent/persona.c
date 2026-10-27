@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "persona.h"
@@ -12,6 +13,7 @@ void persona_defaults(struct persona *p)
     snprintf(p->first_person, PERSONA_STR, "%s", "私");
     snprintf(p->address_user, PERSONA_STR, "%s", "わたし");
     p->mirror_user = 1;
+    p->mirror_after = 30;
 }
 
 static char *trim(char *s)
@@ -42,8 +44,8 @@ static int parse_kv(char *line, char **key, char **val)
     char *hash = strchr(v, '#');
     if (hash) *hash = '\0';
     v = trim(v);
-    if (strcmp(v, "true") != 0 && strcmp(v, "false") != 0) return 0;
-    *val = v;
+    if (*v == '\0' || *v == '[') return 0;      /* arrays are not read here */
+    *val = v;                                   /* true / false / a number */
     return 1;
 }
 
@@ -76,6 +78,7 @@ int persona_load(const char *path, struct persona *p)
             if (strcmp(key, "address_user") == 0)      snprintf(p->address_user, PERSONA_STR, "%s", val);
         } else if (strcmp(section, "learning") == 0) {
             if (strcmp(key, "mirror_user") == 0)       p->mirror_user = strcmp(val, "true") == 0;
+            else if (strcmp(key, "mirror_after") == 0) p->mirror_after = atoi(val);
         }
     }
     fclose(f);

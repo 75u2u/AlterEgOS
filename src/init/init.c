@@ -5,7 +5,8 @@
  * agent's job. PID 1 only:
  *   1. mounts the pseudo filesystems the agent needs,
  *   2. brings up the loopback interface and sets the hostname,
- *   3. spawns the agent on the console and an escape shell on tty2,
+ *   3. spawns the agent on the console, an escape shell on tty2, and a
+ *      DHCP client on eth0 when there is one,
  *   4. reaps orphans and respawns the agent (and the shell) when they die,
  *   5. shuts the machine down cleanly on SIGTERM / SIGUSR1 / SIGINT.
  *
@@ -41,6 +42,8 @@
 #define AGENT_CONSOLE   "/dev/console"
 #define SHELL_PATH      "/bin/sh"
 #define SHELL_TTY       "/dev/tty2"
+#define DHCP_PATH       "/sbin/udhcpc"
+#define DHCP_IF         "eth0"
 #define RESPAWN_DELAY_S 1
 #define RESPAWN_BURST   5   /* this many deaths within RESPAWN_WINDOW_S ... */
 #define RESPAWN_WINDOW_S 30 /* ... and we back off instead of looping hot */
@@ -135,23 +138,30 @@ static void mount_all(void)
 /* ------------------------------------------------------------------------ */
 /* 2. identity and loopback                                                   */
 
-static void bring_up_lo(void)
+static void if_up(const char *name)
 {
     int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
     if (fd < 0) {
-        logf_("socket for lo failed: %s", strerror(errno));
+        logf_("socket for %s failed: %s", name, strerror(errno));
         return;
     }
     struct ifreq ifr;
     memset(&ifr, 0, sizeof ifr);
-    strncpy(ifr.ifr_name, "lo", IFNAMSIZ - 1);
+    strncpy(ifr.ifr_name, name, IFNAMSIZ - 1);
     if (ioctl(fd, SIOCGIFFLAGS, &ifr) == 0) {
         ifr.ifr_flags |= IFF_UP | IFF_RUNNING;
         if (ioctl(fd, SIOCSIFFLAGS, &ifr) < 0) {
-            logf_("lo up failed: %s", strerror(errno));
+            logf_("%s up failed: %s", name, strerror(errno));
         }
     }
     close(fd);
+}
+
+static int have_if(const char *name)
+{
+    char path[80];
+    snprintf(path, sizeof path, "/sys/class/net/%s", name);
+    return access(path, F_OK) == 0;
 }
 
 static void set_identity(void)
@@ -159,18 +169,22 @@ static void set_identity(void)
     if (sethostname(HOSTNAME, strlen(HOSTNAME)) < 0) {
         logf_("sethostname failed: %s", strerror(errno));
     }
-    bring_up_lo();
+    if_up("lo");
+    if (have_if(DHCP_IF)) if_up(DHCP_IF);
 }
 
 /* ------------------------------------------------------------------------ */
 /* 3. children                                                                */
 
-enum child_kind { CHILD_AGENT = 0, CHILD_SHELL = 1, CHILD_COUNT };
+enum child_kind { CHILD_AGENT = 0, CHILD_SHELL = 1, CHILD_DHCP = 2, CHILD_COUNT };
+
+#define CHILD_ARGV_MAX 8
 
 struct child {
     const char *name;
     const char *path;
-    const char *tty;
+    const char *tty;                /* NULL: stdio on /dev/null (a daemon) */
+    const char *argv[CHILD_ARGV_MAX];
     pid_t pid;
     time_t deaths[RESPAWN_BURST];   /* ring of recent exit times */
     int death_idx;
@@ -178,8 +192,11 @@ struct child {
 };
 
 static struct child g_children[CHILD_COUNT] = {
-    [CHILD_AGENT] = { "agent", AGENT_PATH, AGENT_CONSOLE, 0, {0}, 0, 0 },
-    [CHILD_SHELL] = { "shell", SHELL_PATH, SHELL_TTY,     0, {0}, 0, 0 },
+    [CHILD_AGENT] = { "agent", AGENT_PATH, AGENT_CONSOLE, { AGENT_PATH, NULL }, 0, {0}, 0, 0 },
+    [CHILD_SHELL] = { "shell", SHELL_PATH, SHELL_TTY,     { SHELL_PATH, NULL }, 0, {0}, 0, 0 },
+    /* busybox udhcpc in the foreground (it keeps renewing the lease); its
+     * default script configures the interface and writes /etc/resolv.conf */
+    [CHILD_DHCP]  = { "dhcp",  DHCP_PATH,  NULL, { DHCP_PATH, "-i", DHCP_IF, "-f", NULL }, 0, {0}, 0, 0 },
 };
 
 /* Open `tty`, make it the controlling terminal and stdio of the calling
@@ -187,6 +204,16 @@ static struct child g_children[CHILD_COUNT] = {
  * tty2 (serial-only QEMU) just means no escape shell. */
 static int attach_tty(const char *tty)
 {
+    if (!tty) {
+        int fd = open("/dev/null", O_RDWR);
+        if (fd < 0) return -1;
+        (void)setsid();
+        dup2(fd, STDIN_FILENO);
+        dup2(fd, STDOUT_FILENO);
+        dup2(fd, STDERR_FILENO);
+        if (fd > STDERR_FILENO) close(fd);
+        return 0;
+    }
     int fd = open(tty, O_RDWR | O_NOCTTY);
     if (fd < 0) return -1;
     (void)setsid();
@@ -225,7 +252,6 @@ static void spawn(struct child *c)
         if (attach_tty(c->tty) < 0) {
             _exit(127);  /* no such tty: treated below as "do not respawn" */
         }
-        char *const argv[] = { (char *)c->path, NULL };
         char *const envp[] = {
             "PATH=/usr/sbin:/usr/bin:/sbin:/bin",
             "HOME=/root",
@@ -233,7 +259,7 @@ static void spawn(struct child *c)
             "ALTEREGO_PERSONA=/etc/alterego/persona.toml",
             NULL,
         };
-        execve(c->path, argv, envp);
+        execve(c->path, (char *const *)c->argv, envp);
         _exit(126);
     }
     c->pid = pid;
@@ -246,7 +272,7 @@ static void on_child_exit(struct child *c, int status)
     time_t now = time(NULL);
 
     if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
-        logf_("%s: %s not available, not respawning", c->name, c->tty);
+        logf_("%s: %s not available, not respawning", c->name, c->tty ? c->tty : "/dev/null");
         c->next_spawn = (time_t)-1;
         return;
     }
@@ -346,7 +372,13 @@ int alteregos_init_main(void)
     logf_("AlterEgOS " ALTEREGOS_VERSION " booted, starting the agent on %s",
           g_children[CHILD_AGENT].tty);
 
-    for (int i = 0; i < CHILD_COUNT; i++) spawn(&g_children[i]);
+    if (!have_if(DHCP_IF)) {
+        logf_("no %s, not starting the DHCP client", DHCP_IF);
+        g_children[CHILD_DHCP].next_spawn = (time_t)-1;
+    }
+    for (int i = 0; i < CHILD_COUNT; i++) {
+        if (g_children[i].next_spawn != (time_t)-1) spawn(&g_children[i]);
+    }
 
     /* Main loop: sleep until a signal (SIGCHLD or shutdown), reap, respawn.
      * sigsuspend-free version: a short sleep keeps the loop simple and the

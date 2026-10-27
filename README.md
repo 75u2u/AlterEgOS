@@ -14,10 +14,11 @@ PID 1 がエージェント「AlterEgo」を起動し、bash も systemd もデ�
 - エージェントには人格がある。デフォルト名は AlterEgo(アルターエゴ)、丁寧な二十歳くらいの女性。これは出発点で、持ち主(呼び名は「わたし」)と話すたびに性格と口癖を学び、自分に投影して「わたし」に近づいていく(自己投影)
 - 実装は C/C++(いずれ Rust 化)。開発は QEMU、移植先は PC(x86_64)と Raspberry Pi(aarch64)
 
-## いまの状態(MVP 1 日目)
+## いまの状態(MVP 3 日目まで)
 
-- `src/init/`: PID 1。擬似 FS のマウント、ホスト名と lo、エージェントと tty2 シェルの起動と再起動、シャットダウン
-- `src/agent/`: エージェントの土台。persona.toml を読んで挨拶し、入力を返す(会話は 3 日目から)。自己投影の最初の一歩として、話すたびに「わたし」の文末の口癖を数え、終わるときに覚えたことを言う(保存は 3 日目から)
+- `src/init/`: PID 1。擬似 FS のマウント、ホスト名と lo、eth0 と DHCP クライアント(busybox udhcpc)、エージェントと tty2 シェルの起動と再起動、シャットダウン
+- `src/agent/`: エージェント。頭は外部のモデルや API に頼らない自前のもの(`brain.c`)。「わたし」の発話から文字 n-gram(1〜3 文字の文脈)と語彙・文末の統計を学び、似た発話を検索して「そのとき次に言ったこと」を返したり、n-gram で「わたし」の文体の文を生成したりする。最初は丁寧な自分の声で聞き役、30 回(persona.toml の `mirror_after`)聞くころには「わたし」の話し方になる(自己投影)。「わたし像」と聞くと覚えたことを話す
+- 保存先は、起動した USB/ディスクの EFI パーティションの `alterego/`(発話のログ `utterances.txt` と `self_model.txt`)。起動時にログから頭を作り直すので、再起動後も続きから。QEMU の `-kernel` 起動では保存先が無く、その回限り
 - `buildroot/`: Buildroot の外部ツリー。x86_64 / aarch64 の defconfig、カーネル設定の断片、rootfs のオーバーレイ
 
 ## 使ってみる(ビルドせずに)
@@ -34,7 +35,11 @@ USB から起動すると、画面に AlterEgo の挨拶が出て、キーボー
 ブートローダはなく、カーネル自身が EFI アプリとして起動する(initramfs 埋め込み)。
 Alt+F2 で tty2 の busybox シェル、Alt+F1 で AlterEgo に戻る。
 
-**QEMU で試す**(同梱の `run-qemu.sh` は展開先でそのまま動く。`./run-qemu.sh` で端末の中、`./run-qemu.sh x86_64 --efi` で UEFI 起動):
+AlterEgo の頭は本体に入っていて、ネットワークも API キーも要らない。話した言葉は USB メモリの `alterego/utterances.txt` に溜まり、
+次に起動したときはそこから続きになる(`alterego/self_model.txt` に、いま覚えていることが書いてある)。
+有線 LAN を挿しておけば DHCP でアドレスを取るが、今はまだ使い道がない。
+
+**QEMU で試す**(同梱の `run-qemu.sh` は展開先でそのまま動く。`./run-qemu.sh` で端末の中、`./run-qemu.sh x86_64 --efi` で UEFI 起動。後者は覚えたことがイメージに残る):
 
 ```sh
 sudo apt install qemu-system-x86 ovmf
@@ -91,8 +96,8 @@ build/           Buildroot 本体と成果物(git 管理外)
 
 ## 今週の予定
 
-1. ~~Buildroot でカーネルと initramfs をビルドし、C の最小 init が QEMU のシリアルコンソールに挨拶する~~ ← ここ
-2. virtio-net で DHCP を取り、init から Claude API に HTTPS で 1 往復する
-3. 会話ループと自己投影。1 往復ごとに「わたし」の性格・口癖・価値観を振り返って SQLite に足し、次の返事の人格に混ぜる。再起動後に続きから話せる(USB イメージに書き込み用パーティションを足す)
+1. ~~Buildroot でカーネルと initramfs をビルドし、C の最小 init が QEMU のシリアルコンソールに挨拶する~~
+2. ~~virtio-net で DHCP を取る~~(Claude API は使わない方針になった。頭は自前)
+3. ~~会話ループと自己投影。自前の会話エンジンが「わたし」の発話から学び、話すほど「わたし」の話し方になる。発話ログを EFI パーティションに保存し、再起動後に続きから~~ ← ここ(エンジンを賢くするのは続く)
 4. syscall と exec の道具と監査ログ
 5. btrfs スナップショットと「戻して」、tty2 の退路。通しで使ってみる

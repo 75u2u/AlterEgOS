@@ -39,3 +39,6 @@ CONFIG_SCSI=y
 # Disks on real hardware: NVMe, AHCI, and USB sticks are enough to start
 CONFIG_BLK_DEV_NVME=y
 CONFIG_SATA_AHCI=y
+
+# PC real-time clock (QEMU q35 has one too)
+CONFIG_RTC_DRV_CMOS=y

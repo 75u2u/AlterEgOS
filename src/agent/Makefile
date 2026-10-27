@@ -1,12 +1,12 @@
-# AlterEgo agent. Day 1: persona + echo + the first bit of self-projection. Linked static like init so a broken
-# shared-library setup on the target cannot take the agent down with it.
+# AlterEgo agent: persona, its own conversational engine (brain.c) and the
+# on-disk store. Static like init: no dependencies beyond libc.
 CC      ?= gcc
 CFLAGS  ?= -O2
 CFLAGS  += -std=c17 -Wall -Wextra -Werror -Wpedantic
 LDFLAGS += -static
 
-SRC = main.c persona.c learn.c
-HDR = persona.h learn.h
+SRC = main.c persona.c brain.c utf8.c store.c
+HDR = persona.h brain.h utf8.h store.h
 
 all: alterego
 

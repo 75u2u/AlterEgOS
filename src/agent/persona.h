@@ -18,6 +18,9 @@ struct persona {
     int  mirror_user;                /* learning.mirror_user: learn the user's
                                         personality and speech habits every
                                         turn and project them onto itself   */
+    int  mirror_after;               /* learning.mirror_after: utterances
+                                        until AlterEgo talks fully in the
+                                        user's voice                        */
 };
 
 void persona_defaults(struct persona *p);
