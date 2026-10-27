@@ -10,7 +10,8 @@ void persona_defaults(struct persona *p)
     snprintf(p->name,         PERSONA_STR, "%s", "AlterEgo");
     snprintf(p->name_ja,      PERSONA_STR, "%s", "アルターエゴ");
     snprintf(p->first_person, PERSONA_STR, "%s", "私");
-    snprintf(p->address_user, PERSONA_STR, "%s", "あなた");
+    snprintf(p->address_user, PERSONA_STR, "%s", "わたし");
+    p->mirror_user = 1;
 }
 
 static char *trim(char *s)
@@ -21,7 +22,9 @@ static char *trim(char *s)
     return s;
 }
 
-/* Parse `key = "value"`; returns 1 and fills key/value on success. */
+/* Parse `key = "value"` or `key = true|false` (a trailing # comment is
+ * dropped); returns 1 and fills key/value on success. A bare boolean comes
+ * back as the string "true" / "false". */
 static int parse_kv(char *line, char **key, char **val)
 {
     char *eq = strchr(line, '=');
@@ -29,10 +32,18 @@ static int parse_kv(char *line, char **key, char **val)
     *eq = '\0';
     *key = trim(line);
     char *v = trim(eq + 1);
-    size_t n = strlen(v);
-    if (n < 2 || v[0] != '"' || v[n - 1] != '"') return 0;
-    v[n - 1] = '\0';
-    *val = v + 1;
+    if (*v == '"') {
+        char *end = strchr(v + 1, '"');
+        if (!end) return 0;
+        *end = '\0';
+        *val = v + 1;
+        return 1;
+    }
+    char *hash = strchr(v, '#');
+    if (hash) *hash = '\0';
+    v = trim(v);
+    if (strcmp(v, "true") != 0 && strcmp(v, "false") != 0) return 0;
+    *val = v;
     return 1;
 }
 
@@ -63,6 +74,8 @@ int persona_load(const char *path, struct persona *p)
             else if (strcmp(key, "first_person") == 0) snprintf(p->first_person, PERSONA_STR, "%s", val);
         } else if (strcmp(section, "voice") == 0) {
             if (strcmp(key, "address_user") == 0)      snprintf(p->address_user, PERSONA_STR, "%s", val);
+        } else if (strcmp(section, "learning") == 0) {
+            if (strcmp(key, "mirror_user") == 0)       p->mirror_user = strcmp(val, "true") == 0;
         }
     }
     fclose(f);
