@@ -23,43 +23,42 @@ jobs:
         run: |
           state=$(mktemp -d)
           run() { ALTEREGO_STATE="$state" ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml ./src/agent/alterego; }
-          out=$(printf 'テスト\n疲れたなあ\n眠いなあ\nわたし像を見せて\nexit\n' | run)
+          # born knowing nothing; learns the names, a like and a note; answers the status question
+          out=$(printf 'こんにちは\n私の名前はゆうやです\n君の名前はエゴにする\nコーヒーが好き\n覚えて、明日は会議\nえらいね！\n何を覚えてる？\nステータス\nexit\n' | run)
           echo "$out"
-          echo "$out" | grep -q 'AlterEgo: おはようございます、わたし'
-          echo "$out" | grep -q '口癖は「なあ」'
-          # the log survives, and a second run picks the learning up again
-          test "$(wc -l < "$state/utterances.txt")" = 3
-          out=$(printf 'わたし像を見せて\nexit\n' | run)
-          echo "$out"
-          echo "$out" | grep -q '3 回聞きました'
-          # English in, English out; the habit is the last word
-          out=$(printf 'hello\ni am so tired today, honestly\nthe build is slow again, honestly\nwhat do you know about me\nexit\n' | run)
-          echo "$out"
-          echo "$out" | grep -q 'AlterEgo: Hello, Watashi\.'
-          echo "$out" | grep -q 'end with "honestly" (2 times)'
-          echo "$out" | grep -q 'speak 6 times, 3 of them in English'
-          echo "$out" | grep -q 'See you later\.'
+          echo "$out" | grep -q 'AlterEgo: はじめまして。まだ、なにも知りません'
+          echo "$out" | grep -q '^user> AlterEgo: ……こんにちは？'
+          echo "$out" | grep -q '^ゆうや> エゴ: '
+          echo "$out" | grep -q 'エゴ: 好き: コーヒー ／ メモ: 明日は会議'
+          echo "$out" | grep -q '名前: エゴ。ゆうやの名前: ゆうや。成長: 生まれたて(6 回話した'
+          # questions about the mind are not learned; the log survives and a second run picks it up
           test "$(wc -l < "$state/utterances.txt")" = 6
-          # the last language is kept across a restart, and 日本語 switches back
-          out=$(printf 'おはよう\nexit\n' | run)
+          grep -q '好き: コーヒー' "$state/personality.txt"
+          out=$(printf 'おはよう\nステータス\nexit\n' | run)
           echo "$out"
-          echo "$out" | grep -q 'AlterEgo: Good morning, Watashi\. I am AlterEgo\.'
-          echo "$out" | grep -q 'AlterEgo: おはようございます、わたし。今日も'
-          echo "$out" | grep -q 'AlterEgo: また後で。'
+          echo "$out" | grep -q '^ゆうや> エゴ: ……おはよう？'
+          echo "$out" | grep -q '7 回話した'
+          # English in, English out, same memory
+          out=$(printf 'hello\ni like ramen\ngood girl!\nwhat do you remember\nstatus\nexit\n' | run)
+          echo "$out"
+          echo "$out" | grep -q 'エゴ: ...hi?'
+          echo "$out" | grep -q 'likes: コーヒー / note: 明日は会議 / likes: ramen'
+          echo "$out" | grep -q 'Name: エゴ. Your name: ゆうや. Growth: babbling (10 conversations'
+          echo "$out" | grep -q 'エゴ: See you later\.'
       - name: Screen checks (terminal emulator, romaji to kana, font)
         run: make -C src/screen test
       - name: Screen smoke test (headless desktop, typed kana reaches the agent)
         run: |
           state=$(mktemp -d)
           ALTEREGO_HEADLESS=1024x768 ALTEREGO_SNAPSHOT="$state/shot.ppm" \
-          ALTEREGO_SCRIPT=$'konnnichiha\nkyouhatsukaretanaa\nwatashizou\n' ALTEREGO_SCRIPT_KANA=1 \
+          ALTEREGO_SCRIPT=$'konnnichiha\nkyouhatsukaretanaa\nsute-tasu\n' ALTEREGO_SCRIPT_KANA=1 \
           ALTEREGO_FONT=src/screen/font.hex ALTEREGO_AGENT="$PWD/src/agent/alterego" ALTEREGO_SHELL=/bin/sh \
           ALTEREGO_STATE="$state" ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml \
           timeout 60 ./src/screen/alterego-screen
           cat "$state/utterances.txt"
-          test "$(wc -l < "$state/utterances.txt")" = 2        # こんにちは, きょうはつかれたなあ (わたしぞう is a query)
+          test "$(wc -l < "$state/utterances.txt")" = 2        # こんにちは, きょうはつかれたなあ (すてーたす is a query)
           grep -q '^こんにちは$' "$state/utterances.txt"
-          grep -q '2 回聞きました' "$state/self_model.txt"
+          grep -q '2 回話した' "$state/personality.txt"
           python3 scripts/ppm2png.py "$state/shot.ppm" screenshot.png
       - name: Upload the desktop screenshot
         uses: actions/upload-artifact@v4

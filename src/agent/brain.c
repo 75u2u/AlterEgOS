@@ -51,6 +51,9 @@ struct wctx {
 
 struct toks { char w[TOKS_MAX][WORD_MAX]; int n; };
 
+#define FACTS_MAX 64
+struct fact { char kind[8]; char text[96]; };   /* kind: like, dislike, about, note */
+
 struct brain {
     struct ctx *bucket[BUCKETS];
     struct wctx *wbucket[BUCKETS];
@@ -65,7 +68,11 @@ struct brain {
     unsigned long chars, questions, exclaims;
     int nutt_en;                    /* how many of the utterances were English */
     enum brain_lang lang;           /* language of the latest utterance */
-    int mirror_after;
+    int stage_turns[3];
+    int traits[T_COUNT];            /* -100..100, 0 at birth */
+    struct fact facts[FACTS_MAX];
+    int nfacts;
+    char user_name[64], own_name[64];   /* learned in conversation; "" = not yet */
     uint64_t rng;
 };
 
@@ -353,6 +360,9 @@ static void each_run(const char *s, void (*fn)(void *, const char *, enum ctype)
 static void learn_run(void *arg, const char *run, enum ctype t)
 {
     struct brain *b = arg;
+    /* kana-only input (the screen's IME) has no kanji to split on: a short
+     * hiragana run is taken as a word too */
+    if (t == CT_HIRAGANA && utf8_count(run) >= 2 && utf8_count(run) <= 6) { word_count(b->words, &b->nwords, WORDS_MAX, run); return; }
     if (!is_content(t) || utf8_count(run) < 1) return;
     char w[WORD_MAX];
     snprintf(w, sizeof w, "%s", run);
@@ -384,11 +394,13 @@ static int ending_of(const char *s, char *out, size_t cap)
 
 /* ---- public: learning */
 
-struct brain *brain_new(int mirror_after)
+static void absorb(struct brain *b, const char *utterance);
+
+struct brain *brain_new(const int stage_turns[3])
 {
     struct brain *b = calloc(1, sizeof *b);
     if (!b) return NULL;
-    b->mirror_after = mirror_after > 0 ? mirror_after : 30;
+    for (int i = 0; i < 3; i++) b->stage_turns[i] = stage_turns && stage_turns[i] > 0 ? stage_turns[i] : (i == 0 ? 10 : i == 1 ? 30 : 60);
     b->rng = (uint64_t)time(NULL) ^ ((uint64_t)getpid() << 32) ^ 0x9E3779B97F4A7C15ull;
     if (!b->rng) b->rng = 1;
     return b;
@@ -442,6 +454,7 @@ void brain_learn(struct brain *b, const char *utterance)
     each_run(utterance, learn_run, b);
     char e[16];
     if (b->lang == BRAIN_JA && ending_of(utterance, e, sizeof e)) word_count(b->endings, &b->nendings, 64, e);
+    absorb(b, utterance);
 }
 
 void brain_load_log(struct brain *b, const char *text)
@@ -463,25 +476,29 @@ void brain_load_log(struct brain *b, const char *text)
 
 int brain_turns(const struct brain *b) { return b->nutt; }
 
-int brain_mirror_percent(const struct brain *b)
+int brain_stage(const struct brain *b)
 {
-    int pct = b->nutt * 100 / b->mirror_after;
-    return pct > 100 ? 100 : pct;
+    int s = 0;
+    for (int i = 0; i < 3; i++) if (b->nutt >= b->stage_turns[i]) s = i + 1;
+    return s;
+}
+
+int brain_trait(const struct brain *b, enum brain_trait t) { return b->traits[t]; }
+int brain_memories_count(const struct brain *b) { return b->nfacts; }
+
+const char *brain_user_name(const struct brain *b, const struct persona *p)
+{
+    if (b->user_name[0]) return b->user_name;
+    return b->lang == BRAIN_EN ? p->address_user_en : p->address_user;
+}
+
+const char *brain_own_name(const struct brain *b, const struct persona *p)
+{
+    if (b->own_name[0]) return b->own_name;
+    return p->name;
 }
 
 /* ---- public: answering */
-
-static const struct word *top(const struct word *tab, int n, int skip_short, const char *not)
-{
-    const struct word *best = NULL;
-    for (int i = 0; i < n; i++) {
-        if (tab[i].count < 2) continue;
-        if (skip_short && utf8_count(tab[i].s) < 2) continue;
-        if (not && strcmp(tab[i].s, not) == 0) continue;
-        if (!best || tab[i].count > best->count) best = &tab[i];
-    }
-    return best;
-}
 
 /* Generate in the user's style, optionally continuing from `seed`. */
 static int generate(struct brain *b, const char *seed, char *out, size_t cap)
@@ -600,108 +617,294 @@ static int has_word(const char *lo, const char *w)
     return 0;
 }
 
-int brain_is_query(const char *line)
+/* 1: status (growth, personality, names), 2: memories, 0: neither. */
+static int query_kind(const char *line)
 {
-    if (has(line, "わたし像") || has(line, "わたしぞう")) return 1;      /* kana too: the screen's IME has no kanji */
+    if (has(line, "覚えてる") || has(line, "おぼえてる") || has(line, "覚えている") || has(line, "おぼえている") ||
+        has(line, "記憶") || has(line, "きおく")) return 2;
+    if (has(line, "ステータス") || has(line, "すてーたす") || has(line, "性格") || has(line, "せいかく") ||
+        has(line, "どんな子") || has(line, "成長") || has(line, "せいちょう")) return 1;
     char lo[512];
     snprintf(lo, sizeof lo, "%s", line);
     lower_ascii(lo);
-    return has(lo, "know about me") || has(lo, "who am i") || has(lo, "what have you learned") ||
-           has(lo, "what did you learn") || has(lo, "remember about me");
-}
-
-static void self_model_en(const struct brain *b, const struct persona *p, char *out, size_t cap);
-
-static int fixed_reply_en(const struct brain *b, const struct persona *p, const char *in, char *out, size_t cap)
-{
-    char lo[512];
-    snprintf(lo, sizeof lo, "%s", in);
-    lower_ascii(lo);
-    const char *u = p->address_user_en;
-    if (has(lo, "good morning"))   { snprintf(out, cap, "Good morning, %s. Let's make today a good one.", u); return 1; }
-    if (has(lo, "good night"))     { snprintf(out, cap, "Good night. I will keep what you told me, %s.", u); return 1; }
-    if (has(lo, "good evening"))   { snprintf(out, cap, "Good evening, %s. How was your day?", u); return 1; }
-    if (has_word(lo, "hello") || has_word(lo, "hi") || has_word(lo, "hey")) { snprintf(out, cap, "Hello, %s.", u); return 1; }
-    if (has(lo, "thank"))          { snprintf(out, cap, "You're welcome. I'm glad I could help you, %s.", u); return 1; }
-    if (has(lo, "bye"))            { snprintf(out, cap, "See you later, %s.", u); return 1; }
-    if (has(lo, "your name") || has(lo, "who are you") || has(lo, "what are you")) {
-        snprintf(out, cap, "I am %s, %s's other self: this OS itself.", p->name, u); return 1;
-    }
-    if (brain_is_query(in)) { self_model_en(b, p, out, cap); return 1; }
-    if (has(lo, "what can you do") || has(lo, "what do you do")) {
-        snprintf(out, cap, "For now I listen and learn the way %s talks. The more you talk, the more my replies sound like you.", u);
-        return 1;
-    }
+    if (has(lo, "what do you remember") || has(lo, "your memories") || has(lo, "what have you learned")) return 2;
+    if (has_word(lo, "status") || has(lo, "your personality") || has(lo, "how are you growing") || has(lo, "how old are you")) return 1;
     return 0;
 }
 
-/* A few things AlterEgo answers in its own words whatever the mirror ratio. */
-static int fixed_reply(const struct brain *b, const struct persona *p, const char *in, char *out, size_t cap)
+int brain_is_query(const char *line) { return query_kind(line) != 0; }
+
+
+/* ---- personality and memories: what one utterance teaches */
+
+struct kw { const char *s; int delta; };
+
+static void bump(struct brain *b, enum brain_trait t, int d)
 {
-    if (b->lang == BRAIN_EN) return fixed_reply_en(b, p, in, out, cap);
-    if (has(in, "おはよう"))   { snprintf(out, cap, "おはようございます、%s。今日もよろしくお願いします。", p->address_user); return 1; }
-    if (has(in, "こんにちは")) { snprintf(out, cap, "こんにちは、%s。", p->address_user); return 1; }
-    if (has(in, "こんばんは")) { snprintf(out, cap, "こんばんは、%s。今日はどんな一日でしたか。", p->address_user); return 1; }
-    if (has(in, "おやすみ"))   { snprintf(out, cap, "おやすみなさい。%sのことは、ちゃんと覚えておきます。", p->address_user); return 1; }
-    if (has(in, "ありがと"))   { snprintf(out, cap, "どういたしまして。%sの役に立てたなら嬉しいです。", p->address_user); return 1; }
-    if (has(in, "名前") || has(in, "だれ") || has(in, "誰")) {
-        snprintf(out, cap, "%sです。%sのもう一人の自分、この OS そのものです。", p->name_ja, p->address_user); return 1;
-    }
-    if (has(in, "わたし像") || has(in, "わたしぞう") || has(in, "覚えて") || has(in, "学習") || has(in, "何を知って")) {
-        brain_self_model(b, p, out, cap); return 1;
-    }
-    if (has(in, "何ができる") || has(in, "なにができる") || has(in, "できること")) {
-        snprintf(out, cap, "今は話を聞いて、%sの言葉づかいを覚えることです。話すほど、%sらしい返事になっていきます。",
-                 p->address_user, p->address_user);
-        return 1;
-    }
-    return 0;
+    int v = b->traits[t] + d;
+    b->traits[t] = v > 100 ? 100 : v < -100 ? -100 : v;
 }
 
-/* AlterEgo's own voice: polite, short, turns the input back to the user. */
-static void polite_reply(struct brain *b, const struct persona *p, const char *in, char *out, size_t cap)
+static int kw_score(const char *s, const char *lo, const struct kw *list)
 {
-    char kw[WORD_MAX];
-    const char *k = known_keyword(b, in, kw, sizeof kw);
-    unsigned pick = (unsigned)(rnd(b) % 4);
-    if (b->lang == BRAIN_EN) {
-        const char *u = p->address_user_en;
-        const struct word *e = top(b->endings_en, b->nendings_en, 0, NULL);
-        if (is_question(in)) {
-            snprintf(out, cap, "What would %s say to that? We have only talked %d times, so let me borrow your own words.", u, b->nutt);
-        } else if (k && pick == 0) {
-            snprintf(out, cap, "You mentioned \"%s\" before. Is it on your mind?", k);
-        } else if (e && pick == 1) {
-            snprintf(out, cap, "You often end with \"%s\", %s. I think I will start saying it too.", e->s, u);
-        } else if (pick == 2) {
-            snprintf(out, cap, "\"%s\"? Tell me more.", in);
-        } else {
-            snprintf(out, cap, "\"%s\". I will remember that.", in);
+    int sum = 0;
+    for (int i = 0; list[i].s; i++)
+        if (has(s, list[i].s) || has(lo, list[i].s)) sum += list[i].delta;
+    return sum;
+}
+
+static const struct kw cheer_kw[] = {
+    {"！", 3}, {"!", 3}, {"笑", 3}, {"www", 3}, {"楽し", 4}, {"たのし", 4}, {"嬉し", 4}, {"うれし", 4},
+    {"ありがと", 2}, {"やった", 4}, {"最高", 4}, {"いいね", 3}, {"happy", 4}, {"fun", 3}, {"great", 3},
+    {"haha", 3}, {"lol", 3}, {"nice", 2}, {"awesome", 4},
+    {"疲れ", -3}, {"つかれ", -3}, {"つらい", -4}, {"辛い", -4}, {"最悪", -4}, {"無理", -3}, {"むり", -3},
+    {"悲し", -4}, {"かなし", -4}, {"tired", -3}, {"sad", -4}, {"ugh", -3}, {"awful", -4}, {"terrible", -4},
+    {NULL, 0}
+};
+static const struct kw praise_kw[] = {                         /* said to the agent */
+    {"えらい", 5}, {"偉い", 5}, {"いい子", 6}, {"かわいい", 5}, {"可愛い", 5}, {"すごい", 4}, {"賢い", 5},
+    {"頭いい", 5}, {"上手", 4}, {"ありがとう", 2}, {"good girl", 5}, {"good job", 5}, {"well done", 5},
+    {"smart", 4}, {"cute", 5}, {"clever", 4}, {"thank", 2},
+    {"だめ", -5}, {"ダメ", -5}, {"駄目", -5}, {"違う", -3}, {"ちがう", -3}, {"やめて", -4}, {"うるさい", -5},
+    {"ばか", -5}, {"バカ", -5}, {"馬鹿", -5}, {"wrong", -3}, {"stupid", -5}, {"shut up", -6}, {"bad girl", -5},
+    {NULL, 0}
+};
+static const struct kw feeling_kw[] = {                        /* only when about the agent */
+    {"大好き", 6}, {"だいすき", 6}, {"好き", 4}, {"すき", 4}, {"love", 5}, {"like", 3},
+    {"嫌い", -5}, {"きらい", -5}, {"hate", -5}, {NULL, 0}
+};
+
+static int about_me(const char *s, const char *lo)
+{
+    return has(s, "君") || has(s, "きみ") || has(s, "あなた") || has(s, "お前") || has(s, "おまえ") ||
+           has(s, "あんた") || has_word(lo, "you") || has_word(lo, "your");
+}
+
+/* Trim trailing punctuation and sentence endings so "ゆうやだよ。" becomes "ゆうや". */
+static void strip_tail(char *s)
+{
+    static const char *const tails[] = {
+        "。", "！", "!", "？", "?", "、", ",", ".", " ", "　",
+        "だよ", "です", "なんだ", "なの", "だね", "だぞ", "だ", "よ", "ね", "にする", "にしよう", "にしたい", "に決めた",
+        "と言います", "といいます", "って言います", "っていいます", "と申します", "ともうします", "って言うんだ", "っていうんだ",
+        "ください", "くださいね", "ね", NULL };
+    for (int again = 1; again;) {
+        again = 0;
+        size_t n = strlen(s);
+        for (int i = 0; tails[i]; i++) {
+            size_t t = strlen(tails[i]);
+            if (n >= t && memcmp(s + n - t, tails[i], t) == 0) { s[n - t] = '\0'; again = 1; break; }
         }
+    }
+}
+
+static const char *skip_subject(const char *s)
+{
+    static const char *const subj[] = { "私は", "僕は", "俺は", "わたしは", "ぼくは", "おれは", "自分は", "私、", "私も", "僕も", NULL };
+    for (int i = 0; subj[i]; i++) {
+        size_t n = strlen(subj[i]);
+        if (strncmp(s, subj[i], n) == 0) return s + n;
+    }
+    return s;
+}
+
+static void remember(struct brain *b, const char *kind, const char *text)
+{
+    char t[96];
+    snprintf(t, sizeof t, "%s", text);
+    strip_tail(t);
+    while (*t == ' ' || (unsigned char)*t == 0xE3) {            /* leading 、 or 　 */
+        if (*t == ' ') memmove(t, t + 1, strlen(t));
+        else if (strncmp(t, "、", 3) == 0 || strncmp(t, "　", 3) == 0 || strncmp(t, "：", 3) == 0) memmove(t, t + 3, strlen(t) - 2);
+        else break;
+    }
+    if (*t == ':') memmove(t, t + 1, strlen(t));
+    size_t cps = utf8_count(t);
+    if (cps == 0 || cps > 40) return;
+    for (int i = 0; i < b->nfacts; i++)
+        if (strcmp(b->facts[i].kind, kind) == 0 && strcmp(b->facts[i].text, t) == 0) return;
+    if (b->nfacts == FACTS_MAX) { memmove(b->facts, b->facts + 1, (FACTS_MAX - 1) * sizeof b->facts[0]); b->nfacts--; }
+    snprintf(b->facts[b->nfacts].kind, sizeof b->facts[0].kind, "%s", kind);
+    snprintf(b->facts[b->nfacts].text, sizeof b->facts[0].text, "%s", t);
+    b->nfacts++;
+}
+
+static void set_name(char *dst, const char *src)
+{
+    char t[64];
+    snprintf(t, sizeof t, "%s", src);
+    strip_tail(t);
+    while (*t == ' ') memmove(t, t + 1, strlen(t));
+    size_t cps = utf8_count(t);
+    if (cps == 0 || cps > 16) return;
+    snprintf(dst, 64, "%s", t);
+}
+
+/* "X が好き" / "X が嫌い": the thing before the marker, after the subject. */
+static void like_fact(struct brain *b, const char *u, const char *marker, const char *kind)
+{
+    const char *p = strstr(u, marker);
+    if (!p) return;
+    const char *end = p;
+    if (end - u >= 3 && memcmp(end - 3, "大", 3) == 0) end -= 3;
+    if (end - u >= 3 && (memcmp(end - 3, "が", 3) == 0 || memcmp(end - 3, "は", 3) == 0 || memcmp(end - 3, "も", 3) == 0)) end -= 3;
+    else return;
+    const char *start = skip_subject(u);
+    if (end <= start) return;
+    char x[96];
+    snprintf(x, sizeof x, "%.*s", (int)(end - start), start);
+    remember(b, kind, x);
+}
+
+static int starts(const char *s, const char *pre) { return strncmp(s, pre, strlen(pre)) == 0; }
+
+static void facts_ja(struct brain *b, const char *u, int me)
+{
+    if (is_question(u)) return;                       /* "名前は？" asks, it does not tell */
+    static const char *const my_name[] = { "私の名前は", "僕の名前は", "俺の名前は", "わたしの名前は", "ぼくの名前は", "おれの名前は", "自分の名前は", NULL };
+    static const char *const your_name[] = { "君の名前は", "きみの名前は", "あなたの名前は", "お前の名前は", "おまえの名前は", "あんたの名前は", "名前は", NULL };
+    for (int i = 0; my_name[i]; i++) if (starts(u, my_name[i])) { set_name(b->user_name, u + strlen(my_name[i])); return; }
+    for (int i = 0; your_name[i]; i++) if (starts(u, your_name[i])) { set_name(b->own_name, u + strlen(your_name[i])); return; }
+    const char *p;
+    if ((p = strstr(u, "と呼んで")) || (p = strstr(u, "って呼んで"))) {       /* "ゆうやと呼んで" */
+        if (!me) { char x[64]; snprintf(x, sizeof x, "%.*s", (int)(p - u), u); set_name(b->user_name, skip_subject(x)); }
         return;
     }
-    const struct word *e = top(b->endings, b->nendings, 0, NULL);
-    if (is_question(in)) {
-        snprintf(out, cap, "%sなら、どう答えるでしょう。まだ %d 回しか話していないので、%sの言葉を借りて考えてみます。",
-                 p->address_user, b->nutt, p->address_user);
-    } else if (k && pick == 0) {
-        snprintf(out, cap, "「%s」の話、前にもしていましたね。気になっているんですか。", k);
-    } else if (e && pick == 1) {
-        snprintf(out, cap, "「%s」が%sの口癖ですね。私も少しずつ、そう言うようになると思います。", e->s, p->address_user);
-    } else if (pick == 2) {
-        snprintf(out, cap, "「%s」、ですか。もう少し聞かせてください。", in);
-    } else {
-        snprintf(out, cap, "「%s」ですね。覚えておきます。", in);
+    if ((p = strstr(u, "と呼ぶ")) || (p = strstr(u, "って呼ぶ")) || (p = strstr(u, "と名付け")) || (p = strstr(u, "と名づけ"))) {
+        char x[64]; snprintf(x, sizeof x, "%.*s", (int)(p - u), u); set_name(b->own_name, x);
+        return;
+    }
+    if (starts(u, "覚えて") || starts(u, "おぼえて")) { remember(b, "note", u + (starts(u, "覚えて") ? 9 : 12)); return; }
+    if ((p = strstr(u, "を覚えて")) || (p = strstr(u, "をおぼえて"))) { char x[96]; snprintf(x, sizeof x, "%.*s", (int)(p - u), u); remember(b, "note", x); return; }
+    if (me) return;                                   /* "君が好き" is a feeling, not a fact */
+    if (has(u, "好き") || has(u, "すき")) { like_fact(b, u, has(u, "好き") ? "好き" : "すき", "like"); return; }
+    if (has(u, "嫌い") || has(u, "きらい") || has(u, "苦手")) { like_fact(b, u, has(u, "嫌い") ? "嫌い" : has(u, "きらい") ? "きらい" : "苦手", "dislike"); return; }
+    const char *x = skip_subject(u);
+    if (x != u && !has(u, "？") && !has(u, "?")) {    /* "私は学生です" */
+        char t[96];
+        snprintf(t, sizeof t, "%s", x);
+        strip_tail(t);
+        if (utf8_count(t) >= 1 && utf8_count(t) <= 30 && !has(t, "、") && utf8_count(t) <= 20) remember(b, "about", t);
     }
 }
 
-/* The user's voice: what they said next last time, or text generated from
- * their own n-grams, seeded with a word they used. */
-static int mirrored_reply(struct brain *b, const char *in, char *out, size_t cap)
+static void facts_en(struct brain *b, const char *u, const char *lo, int me)
+{
+    if (is_question(u)) return;
+    static const struct { const char *pre; const char *kind; } pats[] = {
+        {"my name is ", "uname"}, {"call me ", "uname"}, {"i am called ", "uname"},
+        {"your name is ", "oname"}, {"i'll call you ", "oname"}, {"i will call you ", "oname"}, {"i name you ", "oname"},
+        {"i like ", "like"}, {"i love ", "like"}, {"i really like ", "like"},
+        {"i hate ", "dislike"}, {"i don't like ", "dislike"}, {"i dislike ", "dislike"},
+        {"remember that ", "note"}, {"remember ", "note"}, {"don't forget ", "note"},
+        {"i am a ", "about"}, {"i'm a ", "about"}, {"i am an ", "about"}, {"i'm an ", "about"}, {"i live in ", "about"}, {"i work as ", "about"},
+        {NULL, NULL}
+    };
+    for (int i = 0; pats[i].pre; i++) {
+        const char *p = strstr(lo, pats[i].pre);
+        if (!p) continue;
+        const char *x = u + (p - lo) + strlen(pats[i].pre);
+        char t[96];
+        snprintf(t, sizeof t, "%s", x);
+        strip_tail(t);
+        if (strcmp(pats[i].kind, "uname") == 0) set_name(b->user_name, t);
+        else if (strcmp(pats[i].kind, "oname") == 0) set_name(b->own_name, t);
+        else if ((strcmp(pats[i].kind, "like") == 0 || strcmp(pats[i].kind, "dislike") == 0) && me) return;
+        else remember(b, pats[i].kind, t);
+        return;
+    }
+}
+
+static void absorb(struct brain *b, const char *u)
+{
+    char lo[512];
+    snprintf(lo, sizeof lo, "%s", u);
+    lower_ascii(lo);
+    int me = about_me(u, lo);
+    size_t cps = utf8_count(u);
+
+    bump(b, T_CHEER, kw_score(u, lo, cheer_kw));
+    int praise = kw_score(u, lo, praise_kw) + (me ? kw_score(u, lo, feeling_kw) : 0);
+    bump(b, T_AFFECTION, praise);
+    bump(b, T_CHEER, praise / 2);
+
+    char t[512];
+    snprintf(t, sizeof t, "%s", u);
+    size_t n = strlen(t);
+    while (n > 0 && (t[n - 1] == '!' || t[n - 1] == '?' || t[n - 1] == '.' || t[n - 1] == ' ')) t[--n] = '\0';
+    for (int again = 1; again && n >= 3;) {
+        again = 0;
+        static const char *const punct[] = { "。", "！", "？", "、", NULL };
+        for (int i = 0; punct[i]; i++) if (n >= 3 && memcmp(t + n - 3, punct[i], 3) == 0) { n -= 3; t[n] = '\0'; again = 1; }
+    }
+    static const char *const polite_end[] = { "です", "ます", "ました", "ません", "ください", "でしょう", "ですか", "ますか", NULL };
+    static const char *const casual_end[] = { "だよ", "じゃん", "だろ", "だぞ", "だぜ", "かよ", "なあ", "だな", "ぞ", "ぜ", NULL };
+    for (int i = 0; polite_end[i]; i++) { size_t m = strlen(polite_end[i]); if (n >= m && memcmp(t + n - m, polite_end[i], m) == 0) { bump(b, T_POLITE, 3); break; } }
+    for (int i = 0; casual_end[i]; i++) { size_t m = strlen(casual_end[i]); if (n >= m && memcmp(t + n - m, casual_end[i], m) == 0) { bump(b, T_POLITE, -3); break; } }
+    if (has(lo, "please") || has(lo, "thank you") || has(lo, "could you") || has(lo, "would you")) bump(b, T_POLITE, 2);
+    if (has(u, "お前") || has(u, "てめえ") || has(lo, "damn") || has(lo, "shit") || has(lo, "fuck")) bump(b, T_POLITE, -4);
+
+    if (is_question(u) || has(u, "なぜ") || has(u, "どうして") || has(u, "なんで") || has_word(lo, "why") || has_word(lo, "how")) bump(b, T_CURIOUS, 3);
+    if (cps > 25) bump(b, T_TALK, 2);
+    else if (cps < 6) bump(b, T_TALK, -2);
+
+    if (b->lang == BRAIN_EN) facts_en(b, u, lo, me);
+    else facts_ja(b, u, me);
+}
+
+/* ---- speaking */
+
+static int style(const struct brain *b) { return b->traits[T_POLITE] > 15 ? 1 : b->traits[T_POLITE] < -15 ? 2 : 0; }   /* 0 plain, 1 polite, 2 casual */
+
+/* Pick one of three phrasings by style, with printf arguments. */
+#define SAY(b, out, cap, plain, polite, casual, ...) \
+    snprintf(out, cap, style(b) == 1 ? polite : style(b) == 2 ? casual : plain, __VA_ARGS__)
+
+static const char *longest_run(const char *input, char *buf, size_t cap)
+{
+    struct bag in = { .n = 0 };
+    each_run(input, collect_run, &in);
+    const char *best = NULL;
+    size_t best_len = 0;
+    for (int i = 0; i < in.n; i++) {
+        uint32_t cp;
+        utf8_decode(in.w[i], &cp);
+        if (utf8_class(cp) == CT_DIGIT) continue;
+        size_t l = utf8_count(in.w[i]);
+        if (l > best_len) { best = in.w[i]; best_len = l; }
+    }
+    if (!best) return NULL;
+    snprintf(buf, cap, "%s", best);
+    return buf;
+}
+
+static const struct fact *random_fact(struct brain *b, const char *kind)
+{
+    int n = 0;
+    for (int i = 0; i < b->nfacts; i++) if (!kind || strcmp(b->facts[i].kind, kind) == 0) n++;
+    if (n == 0) return NULL;
+    int pick = (int)(rnd(b) % (uint64_t)n);
+    for (int i = 0; i < b->nfacts; i++) if (!kind || strcmp(b->facts[i].kind, kind) == 0) { if (pick-- == 0) return &b->facts[i]; }
+    return NULL;
+}
+
+/* Lines that teach (names, "remember ...") are instructions, not things to say back. */
+static int is_teaching(const char *u)
+{
+    char lo[512];
+    snprintf(lo, sizeof lo, "%s", u);
+    lower_ascii(lo);
+    return has(u, "名前は") || has(u, "呼んで") || has(u, "呼ぶ") || has(u, "名付け") || has(u, "名づけ") ||
+           has(u, "覚えて") || has(u, "おぼえて") || has(lo, "my name is") || has(lo, "your name is") ||
+           has(lo, "call me") || has(lo, "call you") || has(lo, "remember");
+}
+
+/* Something the user said next last time, or text generated from their words. */
+static int learned_reply(struct brain *b, const char *in, char *out, size_t cap, int max_cps)
 {
     int i = most_similar(b, in);
     if (i >= 0 && i + 1 < b->nutt - 1 && strcmp(b->utt[i + 1], in) != 0 &&
-        brain_detect_lang(b->utt[i + 1], b->lang) == b->lang) {
+        brain_detect_lang(b->utt[i + 1], b->lang) == b->lang && !brain_is_query(b->utt[i + 1]) && !is_teaching(b->utt[i + 1])) {
         snprintf(out, cap, "%s", b->utt[i + 1]);
         return 1;
     }
@@ -710,92 +913,267 @@ static int mirrored_reply(struct brain *b, const char *in, char *out, size_t cap
     for (int attempt = 0; attempt < 4; attempt++) {
         const char *seed = attempt < 2 ? k : NULL;
         int ok = b->lang == BRAIN_EN ? generate_en(b, seed, out, cap) : generate(b, seed, out, cap);
-        if (ok && strcasecmp(out, in) != 0) return 1;
+        if (ok && strcasecmp(out, in) != 0 && (int)utf8_count(out) <= max_cps) return 1;
     }
     return 0;
+}
+
+/* Add the personality's colour to a finished sentence. */
+static void colour(struct brain *b, char *out, size_t cap)
+{
+    size_t n = strlen(out);
+    if (n == 0) return;
+    int cheer = b->traits[T_CHEER];
+    int ends_punct = n >= 3 && (memcmp(out + n - 3, "。", 3) == 0 || memcmp(out + n - 3, "！", 3) == 0 || memcmp(out + n - 3, "？", 3) == 0);
+    if (!ends_punct && (out[n - 1] == '!' || out[n - 1] == '?' || out[n - 1] == '.')) ends_punct = 1;
+    if (cheer > 25 && !ends_punct && n + 4 < cap && rnd(b) % 2 == 0) strcat(out, b->lang == BRAIN_EN ? "!" : "！");
+    else if (cheer < -25 && n + 4 < cap && rnd(b) % 2 == 0) { memmove(out + 3, out, n + 1); memcpy(out, "…", 3); }
+}
+
+static int greeting_reply(struct brain *b, const struct persona *p, const char *in, const char *lo, char *out, size_t cap)
+{
+    const char *you = brain_user_name(b, p);
+    int stage = brain_stage(b);
+    if (b->lang == BRAIN_EN) {
+        if (has(lo, "good morning")) snprintf(out, cap, stage == 0 ? "...morning?" : "Good morning, %s.", you);
+        else if (has(lo, "good night")) snprintf(out, cap, stage == 0 ? "...night." : "Good night, %s.", you);
+        else if (has_word(lo, "hello") || has_word(lo, "hi") || has_word(lo, "hey")) snprintf(out, cap, stage == 0 ? "...hi?" : "Hi, %s!", you);
+        else if (has(lo, "thank")) snprintf(out, cap, stage == 0 ? "..." : stage == 1 ? "Thank... you?" : "You're welcome, %s.", you);
+        else if (has(lo, "bye")) snprintf(out, cap, stage == 0 ? "...bye?" : "Bye, %s. Come back soon.", you);
+        else return 0;
+        return 1;
+    }
+    if (has(in, "おはよう")) {
+        if (stage == 0) snprintf(out, cap, "……おはよう？");
+        else SAY(b, out, cap, "おはよう、%s。", "おはようございます、%sさん。", "おはよ、%s！", you);
+    } else if (has(in, "こんにちは")) {
+        if (stage == 0) snprintf(out, cap, "……こんにちは？");
+        else SAY(b, out, cap, "こんにちは、%s。", "こんにちは、%sさん。", "やっほー、%s！", you);
+    } else if (has(in, "こんばんは")) {
+        if (stage == 0) snprintf(out, cap, "……こんばんは？");
+        else SAY(b, out, cap, "こんばんは、%s。", "こんばんは、%sさん。", "こんばんは〜、%s。", you);
+    } else if (has(in, "おやすみ")) {
+        if (stage == 0) snprintf(out, cap, "……おやすみ。");
+        else SAY(b, out, cap, "おやすみ、%s。", "おやすみなさい、%sさん。", "おやすみー、%s。", you);
+    } else if (has(in, "ありがと")) {
+        if (stage == 0) snprintf(out, cap, "……？");
+        else if (stage == 1) snprintf(out, cap, "ありがと……？");
+        else SAY(b, out, cap, "どういたしまして。", "どういたしまして、%sさん。", "いいよいいよ、%s。", you);
+    } else if (has(in, "ばいばい") || has(in, "バイバイ") || has(in, "さようなら") || has(in, "またね")) {
+        if (stage == 0) snprintf(out, cap, "……ばいばい？");
+        else SAY(b, out, cap, "またね、%s。", "いってらっしゃい、%sさん。", "ばいばい、%s！", you);
+    } else {
+        return 0;
+    }
+    return 1;
+}
+
+static void name_reply(struct brain *b, const struct persona *p, char *out, size_t cap)
+{
+    const char *you = brain_user_name(b, p);
+    if (b->lang == BRAIN_EN) {
+        if (b->own_name[0]) snprintf(out, cap, "My name is %s. You gave it to me, %s.", b->own_name, you);
+        else snprintf(out, cap, "I don't have a name yet. Will you give me one? Say \"your name is ...\".");
+        return;
+    }
+    if (b->own_name[0]) SAY(b, out, cap, "%s。%sがつけてくれた名前。", "%sです。%sさんがつけてくださった名前です。", "%s！%sがつけてくれたんだよ。", b->own_name, you);
+    else if (brain_stage(b) == 0) snprintf(out, cap, "……？(まだ名前がありません。「君の名前は〇〇」でつけてください)");
+    else SAY(b, out, cap, "まだ名前がない。%sがつけて？", "まだ名前がありません。%sさんがつけてくださいますか。", "名前、まだないんだ。%sがつけてよ。", you);
+}
+
+/* The word to echo: a name or fact just taught, else the longest run. */
+static const char *echo_word(const struct brain *b, const char *in, char *buf, size_t cap)
+{
+    if (b->user_name[0] && has(in, b->user_name)) { snprintf(buf, cap, "%s", b->user_name); return buf; }
+    if (b->own_name[0] && has(in, b->own_name)) { snprintf(buf, cap, "%s", b->own_name); return buf; }
+    if (b->nfacts > 0 && has(in, b->facts[b->nfacts - 1].text)) { snprintf(buf, cap, "%s", b->facts[b->nfacts - 1].text); return buf; }
+    return longest_run(in, buf, cap);
+}
+
+static void newborn_reply(struct brain *b, const char *in, char *out, size_t cap)
+{
+    char w[128];
+    const char *k = echo_word(b, in, w, sizeof w);
+    unsigned pick = (unsigned)(rnd(b) % 4);
+    if (b->lang == BRAIN_EN) {
+        if (k && pick < 3) snprintf(out, cap, pick == 0 ? "...%s?" : pick == 1 ? "%s..." : "...%s. %s?", k, k);
+        else snprintf(out, cap, pick == 0 ? "..." : pick == 1 ? "(stares at you)" : "(tilts head)");
+        return;
+    }
+    if (k && pick < 3) snprintf(out, cap, pick == 0 ? "……%s？" : pick == 1 ? "%s……" : "…%s、%s？", k, k);
+    else snprintf(out, cap, pick == 0 ? "……" : pick == 1 ? "（じっと見ている）" : pick == 2 ? "（首をかしげる）" : "……？");
+}
+
+static void babbling_reply(struct brain *b, const struct persona *p, const char *in, char *out, size_t cap)
+{
+    char kw[WORD_MAX], w[128];
+    const char *k = known_keyword(b, in, kw, sizeof kw);
+    const char *any = echo_word(b, in, w, sizeof w);
+    const char *you = brain_user_name(b, p);
+    unsigned pick = (unsigned)(rnd(b) % 3);
+    int curious = b->traits[T_CURIOUS] > 10;
+    if (b->lang == BRAIN_EN) {
+        if (k && pick == 0) snprintf(out, cap, "%s! I know %s.", k, k);
+        else if (k && pick == 1 && learned_reply(b, in, out, cap, 6)) return;
+        else if (any && curious) snprintf(out, cap, "\"%s\"... what is that, %s?", any, you);
+        else if (any) snprintf(out, cap, "%s... %s.", any, any);
+        else snprintf(out, cap, pick == 0 ? "Mm." : pick == 1 ? "...yes?" : "Mm-hm.");
+        return;
+    }
+    if (k && pick == 0) SAY(b, out, cap, "%s！%s、知ってる。", "%s。%s、知っています。", "%s！%s、知ってる！", k, k);
+    else if (k && pick == 1 && learned_reply(b, in, out, cap, 8)) return;
+    else if (any && curious) SAY(b, out, cap, "「%s」って、なに？", "「%s」って、なんですか？", "「%s」ってなに、%s？", any, you);
+    else if (any) snprintf(out, cap, "%s……%s。", any, any);
+    else snprintf(out, cap, pick == 0 ? "うん。" : pick == 1 ? "……うん？" : "ん。");
+}
+
+static void chatty_reply(struct brain *b, const struct persona *p, const char *in, char *out, size_t cap)
+{
+    const char *you = brain_user_name(b, p);
+    int grown = brain_stage(b) >= 3;
+    unsigned pick = (unsigned)(rnd(b) % 5);
+    const struct fact *f;
+    if (pick == 0 && (f = random_fact(b, "like")) != NULL && !has(in, f->text)) {
+        if (b->lang == BRAIN_EN) snprintf(out, cap, "By the way, you said you like %s, %s.", f->text, you);
+        else SAY(b, out, cap, "そういえば、%sが好きって言ってたよね、%s。", "そういえば、%sがお好きなんですよね、%sさん。", "てか%s好きなんでしょ、%s！", f->text, you);
+        return;
+    }
+    if (is_question(in)) {
+        if (learned_reply(b, in, out, cap, 60)) { colour(b, out, cap); return; }
+        if (b->lang == BRAIN_EN) snprintf(out, cap, b->traits[T_CURIOUS] > 10 ? "I don't know yet. What do you think, %s?" : "I don't know that yet, %s.", you);
+        else if (b->traits[T_CURIOUS] > 10) SAY(b, out, cap, "まだわからない。%sはどう思う？", "まだわかりません。%sさんはどう思いますか？", "わかんない！%sはどう思うの？", you);
+        else SAY(b, out, cap, "まだわからない。%.0s", "まだわかりません。%.0s", "わかんないなあ。%.0s", you);
+        return;
+    }
+    if (learned_reply(b, in, out, cap, grown ? 80 : 40)) {
+        colour(b, out, cap);
+        if (grown && b->traits[T_TALK] > 15 && b->nfacts > 0 && rnd(b) % 3 == 0 && (f = random_fact(b, NULL)) != NULL) {
+            size_t n = strlen(out);
+            if (b->lang == BRAIN_EN) snprintf(out + n, cap - n, " I remember: %s.", f->text);
+            else snprintf(out + n, cap - n, " %sのこと、覚えてるよ。", f->text);
+        }
+        return;
+    }
+    char w[WORD_MAX];
+    const char *any = longest_run(in, w, sizeof w);
+    if (b->lang == BRAIN_EN) {
+        if (any) snprintf(out, cap, pick < 2 ? "\"%s\"... tell me more, %s." : "%s. I'll remember that.", any, you);
+        else snprintf(out, cap, "Mm-hm.");
+        return;
+    }
+    if (any) SAY(b, out, cap, "%sのこと、もっと教えて。", "%sのこと、もっと教えてください。", "%s？もっと聞かせて、%s！", any, you);
+    else SAY(b, out, cap, "うん、聞いてる。%.0s", "はい、聞いています。%.0s", "うんうん。%.0s", you);
+    colour(b, out, cap);
+}
+
+/* Praise and scolding get an answer of their own: this is how it is raised. */
+static int feedback_reply(struct brain *b, const struct persona *p, const char *in, const char *lo, char *out, size_t cap)
+{
+    int me = about_me(in, lo);
+    int score = kw_score(in, lo, praise_kw) + (me ? kw_score(in, lo, feeling_kw) : 0);
+    if (score == 0) return 0;
+    const char *you = brain_user_name(b, p);
+    int stage = brain_stage(b);
+    unsigned pick = (unsigned)(rnd(b) % 2);
+    if (b->lang == BRAIN_EN) {
+        if (score > 0) snprintf(out, cap, stage == 0 ? "...! (happy)" : stage == 1 ? "Hehe. %s..." : pick ? "Hehe, thank you, %s. I like you too." : "That makes me happy, %s!", you);
+        else snprintf(out, cap, stage == 0 ? "... (shrinks)" : stage == 1 ? "...sorry, %s." : pick ? "I'm sorry, %s. I'll do better." : "...did I do something wrong, %s?", you);
+        return 1;
+    }
+    if (score > 0) {
+        if (stage == 0) snprintf(out, cap, "……！（うれしそう）");
+        else if (stage == 1) snprintf(out, cap, "えへへ。%s……", you);
+        else if (pick) SAY(b, out, cap, "えへへ。ありがとう、%s。私も%sが好き。", "ありがとうございます、%sさん。私も%sさんのことが好きです。", "えへへ、%s！私も%s、大好き！", you, you);
+        else SAY(b, out, cap, "うれしい。%sにそう言ってもらえると。", "うれしいです。%sさんにそう言っていただけると。", "やったー！%s、うれしい！", you);
+    } else {
+        if (stage == 0) snprintf(out, cap, "……（しゅんとしている）");
+        else if (stage == 1) snprintf(out, cap, "……ごめん、%s。", you);
+        else if (pick) SAY(b, out, cap, "ごめんなさい、%s。気をつける。", "申し訳ありません、%sさん。気をつけます。", "ごめん、%s……。", you);
+        else SAY(b, out, cap, "……何か、まちがえた？%s。", "……何か、間違えましたか？%sさん。", "え、なんか変だった？%s。", you);
+    }
+    return 1;
 }
 
 void brain_reply(struct brain *b, const struct persona *p, const char *input, char *out, size_t cap)
 {
     b->lang = brain_detect_lang(input, b->lang);     /* answer in the language spoken to */
-    if (fixed_reply(b, p, input, out, cap)) return;
-    int pct = brain_mirror_percent(b);
-    if ((int)(rnd(b) % 100) < pct && mirrored_reply(b, input, out, cap)) return;
-    polite_reply(b, p, input, out, cap);
+    int q = query_kind(input);
+    if (q == 1) { brain_status(b, p, out, cap); return; }
+    if (q == 2) { brain_memories(b, p, out, cap); return; }
+    char lo[512];
+    snprintf(lo, sizeof lo, "%s", input);
+    lower_ascii(lo);
+    if (greeting_reply(b, p, input, lo, out, cap)) return;
+    if (feedback_reply(b, p, input, lo, out, cap)) return;
+    int asks_name = (has(input, "名前") || has(lo, "your name") || has(lo, "who are you")) && is_question(input);
+    if (asks_name) { name_reply(b, p, out, cap); return; }
+    switch (brain_stage(b)) {
+    case 0: newborn_reply(b, input, out, cap); break;
+    case 1: babbling_reply(b, p, input, out, cap); break;
+    default: chatty_reply(b, p, input, out, cap); break;
+    }
 }
 
-static void self_model_en(const struct brain *b, const struct persona *p, char *out, size_t cap)
+static const char *stage_name(const struct brain *b)
 {
-    const char *u = p->address_user_en;
-    if (b->nutt == 0) {
-        snprintf(out, cap, "I know nothing about %s yet. This is our first conversation.", u);
+    static const char *const ja[] = { "生まれたて", "片言", "おしゃべり", "一人前" };
+    static const char *const en[] = { "newborn", "babbling", "chatty", "grown up" };
+    return (b->lang == BRAIN_EN ? en : ja)[brain_stage(b)];
+}
+
+void brain_status(const struct brain *b, const struct persona *p, char *out, size_t cap)
+{
+    const char *you = brain_user_name(b, p);
+    int stage = brain_stage(b);
+    int next = stage < 3 ? b->stage_turns[stage] - b->nutt : 0;
+    struct { enum brain_trait t; const char *ja_hi, *ja_lo, *en_hi, *en_lo; } adj[] = {
+        { T_CHEER, "明るい", "おとなしい", "cheerful", "quiet" },
+        { T_POLITE, "ていねい", "くだけた", "polite", "casual" },
+        { T_CURIOUS, "好奇心旺盛", "のんびり", "curious", "easygoing" },
+        { T_TALK, "おしゃべり", "口数が少ない", "chatty", "a person of few words" },
+        { T_AFFECTION, "甘えん坊", "すねている", "affectionate", "sulky" },
+    };
+    char traits[256] = "";
+    for (size_t i = 0; i < sizeof adj / sizeof adj[0]; i++) {
+        int v = b->traits[adj[i].t];
+        if (v <= 20 && v >= -20) continue;
+        const char *word = b->lang == BRAIN_EN ? (v > 0 ? adj[i].en_hi : adj[i].en_lo) : (v > 0 ? adj[i].ja_hi : adj[i].ja_lo);
+        size_t n = strlen(traits);
+        snprintf(traits + n, sizeof traits - n, "%s%s", n ? (b->lang == BRAIN_EN ? ", " : "、") : "", word);
+    }
+    if (b->lang == BRAIN_EN) {
+        snprintf(out, cap, "Name: %s. Your name: %s. Growth: %s (%d conversations%s%d%s). Personality: %s. Words learned: %d, memories: %d (ask \"what do you remember\").",
+                 b->own_name[0] ? b->own_name : "none yet (say \"your name is ...\")",
+                 b->user_name[0] ? b->user_name : "not told yet (say \"my name is ...\")",
+                 stage_name(b), b->nutt, stage < 3 ? ", " : "", next, stage < 3 ? " more to the next stage" : "",
+                 traits[0] ? traits : "nothing has sprouted yet", b->nwords, b->nfacts);
+        return;
+    }
+    snprintf(out, cap, "名前: %s。%sの名前: %s。成長: %s(%d 回話した%s%d%s)。性格: %s。覚えた言葉 %d 語、覚えていること %d 件(「何を覚えてる？」で聞けます)。",
+             b->own_name[0] ? b->own_name : "まだない(「君の名前は〇〇」でつけてください)",
+             you, b->user_name[0] ? b->user_name : "まだ聞いていない(「私の名前は〇〇」で教えてください)",
+             stage_name(b), b->nutt, stage < 3 ? "、あと " : "", next, stage < 3 ? " 回で次の段階" : "",
+             traits[0] ? traits : "まだ芽生えていない", b->nwords, b->nfacts);
+}
+
+void brain_memories(const struct brain *b, const struct persona *p, char *out, size_t cap)
+{
+    const char *you = brain_user_name(b, p);
+    if (b->nfacts == 0) {
+        if (b->lang == BRAIN_EN) snprintf(out, cap, "I don't remember anything yet. Tell me what you like, who you are, or say \"remember ...\".");
+        else snprintf(out, cap, "まだ何も覚えていません。好きなもの、%sのこと、「覚えて〜」で教えてください。", you);
         return;
     }
     size_t o = 0;
-    int w = snprintf(out + o, cap - o, "I have heard %s speak %d times, %d of them in English, about %lu characters each. ",
-                     u, b->nutt, b->nutt_en, b->chars / (unsigned long)b->nutt);
-    if (w < 0 || (size_t)w >= cap - o) return;
-    o += (size_t)w;
-    if (b->questions * 3 >= (unsigned long)b->nutt) w = snprintf(out + o, cap - o, "You ask a lot of questions. ");
-    else if (b->exclaims * 3 >= (unsigned long)b->nutt) w = snprintf(out + o, cap - o, "You use \"!\" a lot. ");
-    else w = snprintf(out + o, cap - o, "You mostly speak calmly. ");
-    if (w < 0 || (size_t)w >= cap - o) return;
-    o += (size_t)w;
-
-    const struct word *e1 = top(b->endings_en, b->nendings_en, 0, NULL);
-    const struct word *e2 = e1 ? top(b->endings_en, b->nendings_en, 0, e1->s) : NULL;
-    if (e1) {
-        w = snprintf(out + o, cap - o, "Your habit is to end with \"%s\" (%u times)%s%s%s. ", e1->s, e1->count,
-                     e2 ? ", also \"" : "", e2 ? e2->s : "", e2 ? "\"" : "");
-        if (w < 0 || (size_t)w >= cap - o) return;
+    for (int i = 0; i < b->nfacts; i++) {
+        const struct fact *f = &b->facts[i];
+        const char *label;
+        if (b->lang == BRAIN_EN)
+            label = strcmp(f->kind, "like") == 0 ? "likes" : strcmp(f->kind, "dislike") == 0 ? "dislikes" : strcmp(f->kind, "about") == 0 ? "about you" : "note";
+        else
+            label = strcmp(f->kind, "like") == 0 ? "好き" : strcmp(f->kind, "dislike") == 0 ? "嫌い" : strcmp(f->kind, "about") == 0 ? "あなたのこと" : "メモ";
+        int w = snprintf(out + o, cap - o, "%s%s: %s", i ? (b->lang == BRAIN_EN ? " / " : " ／ ") : "", label, f->text);
+        if (w < 0 || (size_t)w >= cap - o) break;
         o += (size_t)w;
     }
-    const struct word *w1 = top(b->words, b->nwords, 1, NULL);
-    const struct word *w2 = w1 ? top(b->words, b->nwords, 1, w1->s) : NULL;
-    if (w1) {
-        w = snprintf(out + o, cap - o, "Words you often use: \"%s\"%s%s%s. ", w1->s,
-                     w2 ? " and \"" : "", w2 ? w2->s : "", w2 ? "\"" : "");
-        if (w < 0 || (size_t)w >= cap - o) return;
-        o += (size_t)w;
-    }
-    snprintf(out + o, cap - o, "Projection is at %d%% (after %d utterances I will talk the way %s does).",
-             brain_mirror_percent(b), b->mirror_after, u);
-}
-
-void brain_self_model(const struct brain *b, const struct persona *p, char *out, size_t cap)
-{
-    if (b->lang == BRAIN_EN) { self_model_en(b, p, out, cap); return; }
-    if (b->nutt == 0) {
-        snprintf(out, cap, "%sのことは、まだ何も知りません。これが最初の会話です。", p->address_user);
-        return;
-    }
-    size_t o = 0;
-    int w = snprintf(out + o, cap - o, "%sの言葉を %d 回聞きました。1 回あたり平均 %lu 文字。",
-                     p->address_user, b->nutt, b->chars / (unsigned long)b->nutt);
-    if (w < 0 || (size_t)w >= cap - o) return;
-    o += (size_t)w;
-    if (b->questions * 3 >= (unsigned long)b->nutt) w = snprintf(out + o, cap - o, "質問が多めです。");
-    else if (b->exclaims * 3 >= (unsigned long)b->nutt) w = snprintf(out + o, cap - o, "「！」をよく使います。");
-    else w = snprintf(out + o, cap - o, "落ち着いた言い方が多いです。");
-    if (w < 0 || (size_t)w >= cap - o) return;
-    o += (size_t)w;
-
-    const struct word *e1 = top(b->endings, b->nendings, 0, NULL);
-    const struct word *e2 = e1 ? top(b->endings, b->nendings, 0, e1->s) : NULL;
-    if (e1) {
-        w = snprintf(out + o, cap - o, "文末の口癖は「%s」(%u回)%s%s%s。", e1->s, e1->count,
-                     e2 ? "、「" : "", e2 ? e2->s : "", e2 ? "」" : "");
-        if (w < 0 || (size_t)w >= cap - o) return;
-        o += (size_t)w;
-    }
-    const struct word *w1 = top(b->words, b->nwords, 1, NULL);
-    const struct word *w2 = w1 ? top(b->words, b->nwords, 1, w1->s) : NULL;
-    if (w1) {
-        w = snprintf(out + o, cap - o, "よく出てくる言葉は「%s」%s%s%s。", w1->s,
-                     w2 ? "と「" : "", w2 ? w2->s : "", w2 ? "」" : "");
-        if (w < 0 || (size_t)w >= cap - o) return;
-        o += (size_t)w;
-    }
-    snprintf(out + o, cap - o, "投影の度合いは %d%%(%d 回話すと %sの話し方になります)。",
-             brain_mirror_percent(b), b->mirror_after, p->address_user);
 }

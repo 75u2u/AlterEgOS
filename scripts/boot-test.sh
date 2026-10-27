@@ -16,7 +16,7 @@ IMG="$REPO/build/$ARCH/images"
 LOG="$REPO/build/$ARCH/boot.log"
 
 WANT_INIT='\[init\] AlterEgOS .* booted'
-WANT_AGENT='AlterEgo: おはようございます'
+WANT_AGENT='AlterEgo: はじめまして'
 
 case "$ARCH" in
     x86_64)
