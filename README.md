@@ -45,42 +45,116 @@ AlterEgo の頭は本体に入っていて、ネットワークも API キーも
 次に起動したときはそこから続きになる(`alterego/personality.txt` に、いまの育ち具合・性格・記憶が書いてある)。
 有線 LAN を挿しておけば DHCP でアドレスを取るが、今はまだ使い道がない。
 
-**QEMU で試す**(同梱の `run-qemu.sh` は展開先でそのまま動く。`./run-qemu.sh` で端末の中、`./run-qemu.sh x86_64 --gui` でデスクトップをウィンドウに表示、`./run-qemu.sh x86_64 --efi --gui` で UEFI 起動。--efi は覚えたことがイメージに残る):
-
-```sh
-sudo apt install qemu-system-x86 ovmf
-qemu-system-x86_64 -machine q35,accel=kvm:tcg -cpu max -m 1024 -vga std -device virtio-tablet-pci \
-    -bios /usr/share/ovmf/OVMF.fd -drive file=alteregos-x86_64.img,format=raw,if=virtio   # 実機と同じ起動(デスクトップをウィンドウに表示)
-qemu-system-x86_64 -machine q35,accel=kvm:tcg -cpu max -m 1024 -nographic \
-    -kernel bzImage -initrd rootfs.cpio.gz -append "console=ttyS0"                            # 端末の中で会話(画面なし。Ctrl-A, X で終了)
-```
+**QEMU で試す**: 展開先で `./run-qemu.sh` を実行すると、QEMU のウィンドウにデスクトップが出る(詳しくは下の「QEMU で起動する」)。
 
 Raspberry Pi 用の SD カードイメージはまだ無い(`alteregos-aarch64` は QEMU virt 向けのカーネルと initramfs)。
 
-## ビルド(Ubuntu)
+## ビルドする(Ubuntu)
+
+Ubuntu(CI は 24.04)の x86_64 PC で。ビルドは Buildroot が全部やる(ツールチェイン、カーネル、busybox、この OS の init・エージェント・画面)。
+
+**1. 必要なパッケージを入れる**
 
 ```sh
-sudo apt install build-essential git curl bc bison flex cpio rsync file unzip \
-    libncurses-dev libssl-dev libelf-dev python3 qemu-system-x86 qemu-system-arm
-
-scripts/build.sh x86_64        # 初回は 30〜60 分(ツールチェインとカーネル)
-scripts/run-qemu.sh x86_64     # 端末の中で会話。終了は Ctrl-A, X
-scripts/run-qemu.sh x86_64 --gui   # デスクトップをウィンドウに表示
+sudo apt install build-essential git curl bc bison flex cpio rsync file unzip wget \
+    libncurses-dev libssl-dev libelf-dev python3 \
+    qemu-system-x86 qemu-system-arm ovmf
 ```
 
-aarch64 は引数を `aarch64` に変えるだけ。`src/` だけ直したあとは
-`scripts/build.sh x86_64 alteregos-rebuild` で数秒。
-
-Buildroot なしで init とエージェントをコンパイルして動かすだけなら:
+**2. ソースを取る**
 
 ```sh
-make host
-ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml ./src/agent/alterego
+git clone https://github.com/75u2u/AlterEgOS.git
+cd AlterEgOS
+```
+
+**3. ビルドする**
+
+```sh
+scripts/build.sh x86_64        # PC 用。初回は 30〜60 分(Buildroot 本体の取得、ツールチェインとカーネルのコンパイル)
+scripts/build.sh aarch64       # Raspberry Pi / QEMU virt 用。こちらも初回は同じくらいかかる
+```
+
+初回に `build/buildroot/` へ Buildroot 2025.02.3 を自動で落とす(ネットワークが要る)。成果物は `build/<arch>/images/` にできる:
+
+| ファイル | 中身 |
+|---|---|
+| `bzImage`(x86_64)/ `Image`(aarch64) | カーネル。x86_64 は initramfs 埋め込みで EFI アプリとしても起動できる |
+| `rootfs.cpio.gz` | initramfs(init、エージェント、画面、busybox、フォント、persona.toml) |
+| `alteregos-x86_64.img` | USB メモリに書く UEFI 起動イメージ(x86_64 のみ) |
+
+**4. 2 回目以降**
+
+```sh
+scripts/build.sh x86_64 alteregos-rebuild   # src/ だけ直したとき。数秒〜数十秒
+scripts/build.sh x86_64                     # 全体。変更が無いところは飛ばすので数分
+scripts/build.sh x86_64 menuconfig          # Buildroot の設定を変える(defconfig は buildroot/configs/)
+```
+
+カーネル設定を変えたいときは `buildroot/board/alteregos/linux-*.fragment` を直して `scripts/build.sh x86_64 linux-rebuild`。
+
+**5. Buildroot なしで、ホストでそのまま動かす**(エージェントと画面の部品だけ試すとき)
+
+```sh
+make host                      # src/init src/agent src/screen をホストの gcc でコンパイル
+ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml ./src/agent/alterego   # 端末で会話
+make check                     # CI と同じコンパイル検査(-Werror、aarch64 クロスがあればそれも)
 make -C src/screen test        # 画面の部品(端末エミュレータ、ローマ字かな変換、フォント)の検査
 ```
 
-画面プログラムは `ALTEREGO_HEADLESS=1024x768 ALTEREGO_SNAPSHOT=shot.ppm ALTEREGO_SCRIPT=$'konnnichiha\n' ALTEREGO_SCRIPT_KANA=1` で
+画面プログラムは `ALTEREGO_HEADLESS=1024x768 ALTEREGO_SNAPSHOT=shot.ppm ALTEREGO_SCRIPT=$'konnnichiha\n' ALTEREGO_SCRIPT_KANA=1 ./src/screen/alterego-screen` で
 フレームバッファ無しでも動き、打ち込みを再生してスクリーンショット(`scripts/ppm2png.py` で PNG に)を残す。CI はこれを Artifact `screenshot` に上げている。
+
+## QEMU で起動する
+
+`scripts/run-qemu.sh` が QEMU の引数を組み立てる。ソースからビルドしたときは `build/<arch>/images/` を、Release を展開した場所で実行したときは同じディレクトリのイメージを使う。
+
+**デスクトップをウィンドウに出す**(既定)
+
+```sh
+scripts/run-qemu.sh x86_64     # または aarch64
+```
+
+QEMU のウィンドウが開き、起動すると AlterEgo の窓に「はじめまして。まだ、なにも知りません」と出る。ウィンドウをクリックしてキーボードで話しかけ、マウスで窓を動かす。
+かな入力は 半角/全角 キーか Ctrl+Space かバーのボタン。実行した端末にはカーネルログが流れる。終わるときはバーの「電源オフ」ボタンか、QEMU のウィンドウを閉じる。
+この起動方法(`-kernel`)では保存先が無いので、覚えたことはその回限り。
+
+**実機と同じ UEFI 起動**(x86_64 のみ。覚えたことがイメージに残る)
+
+```sh
+scripts/run-qemu.sh x86_64 --efi
+```
+
+USB 用の `alteregos-x86_64.img` を OVMF(UEFI ファームウェア)から起動する。PC に USB メモリを挿したのと同じ道筋で、会話は `.img` の中の `alterego/` に保存され、次に起動したときは続きから。
+
+**ウィンドウなしで、端末の中で会話する**
+
+```sh
+scripts/run-qemu.sh x86_64 --serial
+```
+
+画面を使わず、エージェントがシリアルコンソール(この端末)で話す。終了は Ctrl-A を押してから X。SSH 越しなど、ウィンドウが出せないときに。
+
+**環境変数**: `MEM=2048`(メモリ MB、既定 1024)、`QEMU_DISPLAY=sdl`(ウィンドウのバックエンド。既定は gtk → sdl の順で使えるもの)、`OVMF=/path/to/OVMF.fd`(--efi のファームウェアの場所)、`QEMU_EXTRA="..."`(追加の引数)。
+
+**うまくいかないとき**
+
+- ウィンドウが開かず `Display 'gtk' is not available` などと出る: `QEMU_DISPLAY=sdl scripts/run-qemu.sh x86_64`。それも無ければ `qemu-system-x86_64 -display help` で使えるものを確かめる
+- `OVMF not found`: `sudo apt install ovmf`。別の場所にあるなら `OVMF=...` で指定
+- 起動がとても遅い: KVM が使えていない。`ls -l /dev/kvm` が無ければ BIOS で仮想化支援(VT-x / AMD-V)を有効にし、`sudo adduser $USER kvm` してログインし直す。無くても動くが遅い
+- 画面が真っ黒のまま: 端末に流れているカーネルログに `alterego-screen:` の行があるか見る。無ければ画面プログラムが起動していない(`--serial` で試すとエージェント自体が動くかは分かる)
+
+**スクリプトを使わず QEMU を直接叩くとき**(Release を展開したディレクトリで):
+
+```sh
+qemu-system-x86_64 -machine q35,accel=kvm:tcg -cpu max -m 1024 -vga std \
+    -device virtio-keyboard-pci -device virtio-tablet-pci -display gtk -serial mon:stdio \
+    -kernel bzImage -initrd rootfs.cpio.gz -append "console=ttyS0 console=tty0 quiet"        # デスクトップをウィンドウに
+qemu-system-x86_64 -machine q35,accel=kvm:tcg -cpu max -m 1024 -vga std -device virtio-tablet-pci \
+    -bios /usr/share/ovmf/OVMF.fd -drive file=alteregos-x86_64.img,format=raw,if=virtio   # 実機と同じ UEFI 起動
+qemu-system-x86_64 -machine q35,accel=kvm:tcg -cpu max -m 1024 -nographic \
+    -kernel bzImage -initrd rootfs.cpio.gz -append "console=ttyS0"                            # 端末の中で会話
+```
 
 ## GitHub でのビルドと配布
 
