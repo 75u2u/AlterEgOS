@@ -5,8 +5,9 @@
  * from the utterance log in the store (the EFI partition it booted from),
  * greets, and talks. Every line the user types is learned first, then
  * answered by AlterEgo's own engine (brain.c): early on in its own polite
- * voice, more and more in the user's as the log grows. No external model,
- * no network.
+ * voice, more and more in the user's as the log grows. It answers in the
+ * language it is spoken to, Japanese or English. No external model, no
+ * network.
  */
 
 #define _GNU_SOURCE
@@ -39,6 +40,17 @@ static void kmsg_up(const struct persona *p, int turns)
 
 static void greet(const struct persona *p, const struct brain *b, const char *store)
 {
+    if (brain_lang(b) == BRAIN_EN) {        /* the last thing わたし said was English: carry on in it */
+        printf("\n%s: Good morning, %s. I am %s.\n", p->name, p->address_user_en, p->name);
+        if (p->mirror_user)
+            printf("%s: I remember %d things you said. Projection is at %d%%.\n",
+                   p->name, brain_turns(b), brain_mirror_percent(b));
+        if (!store)
+            printf("%s: There is nowhere to write, so what I learn today is lost at the next boot.\n", p->name);
+        printf("%s: Ask \"what do you know about me\" to hear what I have learned. Type \"exit\" and init starts me again.\n\n", p->name);
+        fflush(stdout);
+        return;
+    }
     printf("\n%s: おはようございます、%s。%sです。\n", p->name, p->address_user, p->name_ja);
     if (p->mirror_user) {
         if (brain_turns(b) > 0)
@@ -50,7 +62,7 @@ static void greet(const struct persona *p, const struct brain *b, const char *st
     }
     if (!store)
         printf("%s: 書き込める場所が無いので、今日覚えたことは次に起きたら忘れてしまいます。\n", p->name);
-    printf("%s: 「わたし像」と聞くと覚えたことを話します。「exit」で終わると、initが私をもう一度起動します。\n\n", p->name);
+    printf("%s: 「わたし像」と聞くと覚えたことを話します。英語で話しかければ英語で返します。「exit」で終わると、initが私をもう一度起動します。\n\n", p->name);
     fflush(stdout);
 }
 
@@ -80,7 +92,7 @@ int main(void)
     char *line = NULL;
     size_t cap = 0;
     for (;;) {
-        printf("%s> ", p.address_user);
+        printf("%s> ", brain_lang(b) == BRAIN_EN ? p.address_user_en : p.address_user);
         fflush(stdout);
         ssize_t n = getline(&line, &cap, stdin);
         if (n < 0) break;                      /* EOF: let init respawn us */
@@ -90,7 +102,7 @@ int main(void)
 
         /* Asking about the self-model is a command to AlterEgo, not a
          * sample of how わたし talks: answer it without learning it. */
-        if (p.mirror_user && !strstr(line, "わたし像")) {
+        if (p.mirror_user && !brain_is_query(line)) {
             brain_learn(b, line);
             if (store) {
                 store_append(LOG_FILE, line);
@@ -107,7 +119,7 @@ int main(void)
         brain_self_model(b, &p, reply, sizeof reply);
         printf("%s: %s\n", p.name, reply);
     }
-    printf("%s: また後で。\n", p.name);
+    printf("%s: %s\n", p.name, brain_lang(b) == BRAIN_EN ? "See you later." : "また後で。");
     brain_free(b);
     return 0;
 }

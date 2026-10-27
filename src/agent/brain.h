@@ -23,6 +23,19 @@
 struct brain;
 struct persona;
 
+/* AlterEgo talks Japanese and English. Each utterance is classified (any
+ * kana or kanji: Japanese; otherwise latin letters: English; neither: the
+ * language of the previous turn) and answered in that language. English is
+ * learned with a word n-gram (orders 1..2) beside the character one, and its
+ * habit is the last word of the utterance instead of the last two characters. */
+enum brain_lang { BRAIN_JA, BRAIN_EN };
+enum brain_lang brain_detect_lang(const char *s, enum brain_lang fallback);
+enum brain_lang brain_lang(const struct brain *b);     /* of the latest utterance */
+
+/* True for the lines that ask for the self-model ("わたし像", "what do you
+ * know about me"): commands to AlterEgo, not samples of how the user talks. */
+int brain_is_query(const char *line);
+
 struct brain *brain_new(int mirror_after);           /* turns until fully mirrored */
 void          brain_free(struct brain *b);
 
@@ -36,7 +49,7 @@ int  brain_mirror_percent(const struct brain *b);
 void brain_reply(struct brain *b, const struct persona *p, const char *input,
                  char *out, size_t cap);
 
-/* The "わたし像": what has been learned, in words. */
+/* The "わたし像": what has been learned, in words, in the latest language. */
 void brain_self_model(const struct brain *b, const struct persona *p, char *out, size_t cap);
 
 #endif

@@ -15,6 +15,8 @@ struct persona {
     char name_ja[PERSONA_STR];       /* identity.name_ja,      "アルターエゴ"  */
     char first_person[PERSONA_STR];  /* identity.first_person, "私"           */
     char address_user[PERSONA_STR];  /* voice.address_user,    "わたし"        */
+    char address_user_en[PERSONA_STR]; /* voice.address_user_en, "Watashi":
+                                        the same name when talking English */
     int  mirror_user;                /* learning.mirror_user: learn the user's
                                         personality and speech habits every
                                         turn and project them onto itself   */

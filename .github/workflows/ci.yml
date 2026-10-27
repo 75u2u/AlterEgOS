@@ -32,6 +32,20 @@ jobs:
           out=$(printf 'わたし像を見せて\nexit\n' | run)
           echo "$out"
           echo "$out" | grep -q '3 回聞きました'
+          # English in, English out; the habit is the last word
+          out=$(printf 'hello\ni am so tired today, honestly\nthe build is slow again, honestly\nwhat do you know about me\nexit\n' | run)
+          echo "$out"
+          echo "$out" | grep -q 'AlterEgo: Hello, Watashi\.'
+          echo "$out" | grep -q 'end with "honestly" (2 times)'
+          echo "$out" | grep -q 'speak 6 times, 3 of them in English'
+          echo "$out" | grep -q 'See you later\.'
+          test "$(wc -l < "$state/utterances.txt")" = 6
+          # the last language is kept across a restart, and 日本語 switches back
+          out=$(printf 'おはよう\nexit\n' | run)
+          echo "$out"
+          echo "$out" | grep -q 'AlterEgo: Good morning, Watashi\. I am AlterEgo\.'
+          echo "$out" | grep -q 'AlterEgo: おはようございます、わたし。今日も'
+          echo "$out" | grep -q 'AlterEgo: また後で。'
       - name: Init refuses to run outside PID 1
         run: |
           if ./src/init/alteregos-init; then echo "init should have refused"; exit 1; fi
