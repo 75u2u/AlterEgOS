@@ -6,7 +6,7 @@ CC         ?= gcc
 PKG_CONFIG ?= pkg-config
 CFLAGS     ?= -O2
 CFLAGS     += -std=c17 -Wall -Wextra -Werror -Wpedantic
-CFLAGS     += $(shell $(PKG_CONFIG) --cflags libcurl)
+CURL_CFLAGS = $(shell $(PKG_CONFIG) --cflags libcurl)
 LDLIBS     += $(shell $(PKG_CONFIG) --libs libcurl)
 ifeq ($(STATIC),1)
 LDFLAGS    += -static
@@ -18,10 +18,13 @@ HDR = persona.h learn.h json.h api.h store.h
 all: alterego
 
 alterego: $(SRC) $(HDR)
-	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS) $(LDLIBS)
+	$(CC) $(CFLAGS) $(CURL_CFLAGS) -o $@ $(SRC) $(LDFLAGS) $(LDLIBS)
 
+# Syntax-only, also with a cross compiler that has no libcurl in its sysroot:
+# the header comes from check/ (a declarations-only stand-in), never from
+# the host's pkg-config, whose -I would drag host glibc headers in.
 check: $(SRC) $(HDR)
-	$(CC) $(CFLAGS) -fsyntax-only $(SRC)
+	$(CC) $(CFLAGS) -I check -fsyntax-only $(SRC)
 
 clean:
 	rm -f alterego
