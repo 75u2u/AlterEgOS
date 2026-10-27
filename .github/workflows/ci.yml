@@ -21,10 +21,11 @@ jobs:
         run: make check CC=aarch64-linux-gnu-gcc
       - name: Agent smoke test
         run: |
-          out=$(printf 'テスト\nexit\n' | ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml ./src/agent/alterego)
+          out=$(printf 'テスト\n疲れたなあ\n眠いなあ\nexit\n' | ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml ./src/agent/alterego)
           echo "$out"
-          echo "$out" | grep -q 'AlterEgo: おはようございます、Yuyaさん'
+          echo "$out" | grep -q 'AlterEgo: おはようございます、わたし'
           echo "$out" | grep -q '「テスト」ですね'
+          echo "$out" | grep -q '口癖.*「なあ」'
       - name: Init refuses to run outside PID 1
         run: |
           if ./src/init/alteregos-init; then echo "init should have refused"; exit 1; fi
