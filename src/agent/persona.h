@@ -5,12 +5,10 @@
  * never rewrites. Day 1 reads only what the greeting needs; the full file
  * (voice, values, behavior) is parsed from day 3 when the model is wired in.
  * The parser is deliberately tiny: `key = "value"` and `key = true|false`
- * lines inside [identity], [voice], [learning] and [model]. It is not a
- * general TOML parser and does not try to be; the full text is also kept
- * verbatim and handed to the model as part of the system prompt. */
+ * lines inside [identity], [voice] and [learning]. It is not a general TOML
+ * parser and does not try to be. */
 
 #define PERSONA_STR 64
-#define PERSONA_RAW_MAX 8192
 
 struct persona {
     char name[PERSONA_STR];          /* identity.name,         "AlterEgo"     */
@@ -20,13 +18,9 @@ struct persona {
     int  mirror_user;                /* learning.mirror_user: learn the user's
                                         personality and speech habits every
                                         turn and project them onto itself   */
-    char model[PERSONA_STR];         /* model.chat,    conversation model   */
-    char reflect_model[PERSONA_STR]; /* model.reflect, self-model updates   */
-    char effort[16];                 /* model.effort                        */
-    int  max_tokens;                 /* model.max_tokens                    */
-    char *raw;                       /* the whole file, for the system prompt
-                                        (the model reads TOML fine); NULL if
-                                        the file could not be read          */
+    int  mirror_after;               /* learning.mirror_after: utterances
+                                        until AlterEgo talks fully in the
+                                        user's voice                        */
 };
 
 void persona_defaults(struct persona *p);

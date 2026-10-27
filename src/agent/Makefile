@@ -1,30 +1,20 @@
-# AlterEgo agent: persona, the conversation over the Claude API (libcurl),
-# the self-projection learning and the on-disk store. On the target it is
-# linked static like init (Buildroot passes STATIC=1 and a pkg-config that
-# resolves libcurl's static dependencies); on a host it links dynamically.
-CC         ?= gcc
-PKG_CONFIG ?= pkg-config
-CFLAGS     ?= -O2
-CFLAGS     += -std=c17 -Wall -Wextra -Werror -Wpedantic
-CURL_CFLAGS = $(shell $(PKG_CONFIG) --cflags libcurl)
-LDLIBS     += $(shell $(PKG_CONFIG) --libs libcurl)
-ifeq ($(STATIC),1)
-LDFLAGS    += -static
-endif
+# AlterEgo agent: persona, its own conversational engine (brain.c) and the
+# on-disk store. Static like init: no dependencies beyond libc.
+CC      ?= gcc
+CFLAGS  ?= -O2
+CFLAGS  += -std=c17 -Wall -Wextra -Werror -Wpedantic
+LDFLAGS += -static
 
-SRC = main.c persona.c learn.c json.c api.c store.c
-HDR = persona.h learn.h json.h api.h store.h
+SRC = main.c persona.c brain.c utf8.c store.c
+HDR = persona.h brain.h utf8.h store.h
 
 all: alterego
 
 alterego: $(SRC) $(HDR)
-	$(CC) $(CFLAGS) $(CURL_CFLAGS) -o $@ $(SRC) $(LDFLAGS) $(LDLIBS)
+	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
 
-# Syntax-only, also with a cross compiler that has no libcurl in its sysroot:
-# the header comes from check/ (a declarations-only stand-in), never from
-# the host's pkg-config, whose -I would drag host glibc headers in.
 check: $(SRC) $(HDR)
-	$(CC) $(CFLAGS) -I check -fsyntax-only $(SRC)
+	$(CC) $(CFLAGS) -fsyntax-only $(SRC)
 
 clean:
 	rm -f alterego

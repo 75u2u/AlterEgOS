@@ -13,11 +13,7 @@ void persona_defaults(struct persona *p)
     snprintf(p->first_person, PERSONA_STR, "%s", "私");
     snprintf(p->address_user, PERSONA_STR, "%s", "わたし");
     p->mirror_user = 1;
-    snprintf(p->model,         PERSONA_STR, "%s", "claude-opus-5-5");
-    snprintf(p->reflect_model, PERSONA_STR, "%s", "claude-haiku-5-5");
-    snprintf(p->effort, sizeof p->effort, "%s", "low");
-    p->max_tokens = 1024;
-    p->raw = NULL;
+    p->mirror_after = 30;
 }
 
 static char *trim(char *s)
@@ -59,15 +55,6 @@ int persona_load(const char *path, struct persona *p)
     if (!f) return -1;
     persona_defaults(p);
 
-    /* Keep the whole file for the system prompt (bounded; it is small). */
-    char *raw = malloc(PERSONA_RAW_MAX);
-    if (raw) {
-        size_t n = fread(raw, 1, PERSONA_RAW_MAX - 1, f);
-        raw[n] = '\0';
-        p->raw = raw;
-        rewind(f);
-    }
-
     char section[32] = "";
     char line[512];
     while (fgets(line, sizeof line, f)) {
@@ -91,11 +78,7 @@ int persona_load(const char *path, struct persona *p)
             if (strcmp(key, "address_user") == 0)      snprintf(p->address_user, PERSONA_STR, "%s", val);
         } else if (strcmp(section, "learning") == 0) {
             if (strcmp(key, "mirror_user") == 0)       p->mirror_user = strcmp(val, "true") == 0;
-        } else if (strcmp(section, "model") == 0) {
-            if (strcmp(key, "chat") == 0)              snprintf(p->model, PERSONA_STR, "%s", val);
-            else if (strcmp(key, "reflect") == 0)      snprintf(p->reflect_model, PERSONA_STR, "%s", val);
-            else if (strcmp(key, "effort") == 0)       snprintf(p->effort, sizeof p->effort, "%s", val);
-            else if (strcmp(key, "max_tokens") == 0)   p->max_tokens = atoi(val);
+            else if (strcmp(key, "mirror_after") == 0) p->mirror_after = atoi(val);
         }
     }
     fclose(f);

@@ -97,3 +97,43 @@ int store_write(const char *name, const char *data)
     sync();   /* a USB stick may be pulled right after */
     return 0;
 }
+
+int store_append(const char *name, const char *line)
+{
+    if (!g_dir[0]) return -1;
+    char p[320];
+    snprintf(p, sizeof p, "%s/%s", g_dir, name);
+    int fd = open(p, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+    if (fd < 0) return -1;
+    size_t len = strlen(line);
+    int ok = write(fd, line, len) == (ssize_t)len && write(fd, "\n", 1) == 1 && fsync(fd) == 0;
+    close(fd);
+    return ok ? 0 : -1;
+}
+
+char *store_read_all(const char *name)
+{
+    if (!g_dir[0]) return NULL;
+    char p[320];
+    snprintf(p, sizeof p, "%s/%s", g_dir, name);
+    FILE *f = fopen(p, "r");
+    if (!f) return NULL;
+    char *buf = NULL;
+    size_t len = 0, cap = 0;
+    char chunk[4096];
+    size_t n;
+    while ((n = fread(chunk, 1, sizeof chunk, f)) > 0) {
+        if (len + n + 1 > cap) {
+            cap = (len + n + 1) * 2;
+            char *q = realloc(buf, cap);
+            if (!q) { free(buf); fclose(f); return NULL; }
+            buf = q;
+        }
+        memcpy(buf + len, chunk, n);
+        len += n;
+    }
+    fclose(f);
+    if (!buf) return strdup("");
+    buf[len] = '\0';
+    return buf;
+}

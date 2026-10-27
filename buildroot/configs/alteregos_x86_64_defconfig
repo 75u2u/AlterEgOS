@@ -5,7 +5,7 @@ BR2_x86_64_v2=y
 # musl: small static binaries, no glibc surprises in PID 1
 BR2_TOOLCHAIN_BUILDROOT_MUSL=y
 BR2_TOOLCHAIN_BUILDROOT_CXX=y
-# Everything linked static (libcurl, mbedtls too): no shared libs to break
+# Everything linked static: no shared-library setup to break
 BR2_STATIC_LIBS=y
 
 # ccache: the second build of the toolchain and kernel is minutes, not an hour
@@ -25,11 +25,6 @@ BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_ALTEREGOS_PATH)/board/
 
 # The OS itself
 BR2_PACKAGE_ALTEREGOS=y
-# what the agent needs to reach the Claude API over HTTPS
-BR2_PACKAGE_MBEDTLS=y
-BR2_PACKAGE_LIBCURL=y
-BR2_PACKAGE_LIBCURL_MBEDTLS=y
-BR2_PACKAGE_CA_CERTIFICATES=y
 
 # Kernel: LTS, arch defconfig + our fragment (virtio, btrfs, serial console)
 BR2_LINUX_KERNEL=y
