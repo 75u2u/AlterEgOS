@@ -94,7 +94,7 @@ scripts/build.sh aarch64       # Raspberry Pi / QEMU virt 用。こちらも初�
 
 **ビルドが途中で止まったとき**
 
-- `libcody/client.cc: error: no match for 'operator=='`(`u8"TRUE"`)や `invalid conversion from 'const char8_t*'`: ホストの GCC が新しくて(GCC 16、Kali や Debian sid)C++20 が既定になり、Buildroot が作るクロスコンパイラ(gcc 13.3)の libcody が通らない。`git pull` すれば直る(`buildroot/board/alteregos/patches/` の GCC 本家の修正を当て、クロスコンパイラを gnu++17 でビルドする)。pull のあと `rm -rf build/x86_64/build/host-gcc-initial-13.3.0` してからビルドし直す。それでも別の場所で止まるなら、`sudo apt install g++-14` して `HOSTCC=gcc-14 HOSTCXX=g++-14 scripts/build.sh x86_64` と古い GCC でビルドする
+- `libcody/client.cc: error: no match for 'operator=='`(`u8"TRUE"`)や `invalid conversion from 'const char8_t*'`: ホストの GCC が新しくて(GCC 16、Kali や Debian sid)C++20 が既定になり、Buildroot が作るクロスコンパイラ(gcc 13.3)の libcody が通らない。`git pull` すれば直る(`buildroot/board/alteregos/patches/` の GCC 本家の修正を当てる。build.sh が新しい defconfig を読み直す)。pull のあと `rm -rf build/x86_64/build/host-gcc-initial-13.3.0` してからビルドし直す。それでも別の場所で止まるなら、`sudo apt install g++-14` して `HOSTCC=gcc-14 HOSTCXX=g++-14 scripts/build.sh x86_64` と古い GCC でビルドする
 - `scripts/build.sh` の最後に `make: *** ... エラー` とだけ出て原因が見えない: `scripts/build.sh x86_64 2>&1 | tee build.log` で残して、`grep -n "error:" build.log` で最初のエラーを探す
 
 **4. 2 回目以降**
