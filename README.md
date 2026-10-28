@@ -63,10 +63,12 @@ Ubuntu(CI は 24.04)の x86_64 PC で。ビルドは Buildroot が全部やる(�
 **1. 必要なパッケージを入れる**
 
 ```sh
-sudo apt install build-essential git curl bc bison flex cpio rsync file unzip wget \
+sudo apt install build-essential git curl bc bison flex cpio rsync file unzip wget cmake \
     libncurses-dev libssl-dev libelf-dev python3 \
     qemu-system-x86 qemu-system-arm ovmf
 ```
+
+Debian / Kali でも同じパッケージ名で入る。`cmake` は必ず入れておく(無いと Buildroot が host-cmake 3.31.5 を自前でビルドし、Kali などでは `undefined reference to cmGlobalGhsMultiGenerator` でリンクに失敗する)。
 
 **2. ソースを取る**
 

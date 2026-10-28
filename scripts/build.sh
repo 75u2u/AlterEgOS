@@ -33,6 +33,21 @@ if [ ! -f "$BR_DIR/Makefile" ]; then
     rm -f "$REPO/build/$tarball"
 fi
 
+# Buildroot uses the host's cmake (>= 3.18) when there is one; without it, it
+# bootstraps its own host-cmake 3.31.5, which is slow and can fail to link on some
+# hosts (undefined reference to cmGlobalGhsMultiGenerator, seen on Kali). Warn early instead of failing 10 minutes in.
+cmake_ok=
+if command -v cmake >/dev/null 2>&1; then
+    read -r cm_major cm_minor < <(cmake --version | sed -nE '1s/.* ([0-9]+)\.([0-9]+).*/\1 \2/p') || true
+    if [ -n "${cm_major:-}" ] && { [ "$cm_major" -gt 3 ] || { [ "$cm_major" -eq 3 ] && [ "$cm_minor" -ge 18 ]; }; }; then
+        cmake_ok=1
+    fi
+fi
+if [ -z "$cmake_ok" ]; then
+    echo "== warning: no cmake >= 3.18 on this host; Buildroot will build host-cmake itself." >&2
+    echo "   Recommended: sudo apt install cmake  (then rm -rf $OUT/build/host-cmake-*)" >&2
+fi
+
 mkdir -p "$OUT"
 if [ ! -f "$OUT/.config" ]; then
     echo "== configuring alteregos_${ARCH}_defconfig"

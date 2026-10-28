@@ -53,7 +53,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential git curl bc bison flex cpio rsync file unzip wget \
+            build-essential git curl bc bison flex cpio rsync file unzip wget cmake \
             libncurses-dev libssl-dev libelf-dev python3 \
             qemu-system-x86 qemu-system-arm ovmf
 
