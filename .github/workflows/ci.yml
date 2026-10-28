@@ -45,6 +45,43 @@ jobs:
           echo "$out" | grep -q 'likes: コーヒー / note: 明日は会議 / likes: ramen'
           echo "$out" | grep -q 'Name: エゴ. Your name: ゆうや. Growth: babbling (10 conversations'
           echo "$out" | grep -q 'エゴ: See you later\.'
+      - name: Agent smoke test (instincts and OS abilities)
+        run: |
+          state=$(mktemp -d)
+          run() { ALTEREGO_STATE="$state" ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml ./src/agent/alterego; }
+          # a newborn can already answer small talk, ask what a word is, and keep the explanation
+          out=$(printf '元気？\nりんごって何？\nりんごは赤い果物だよ\nりんごって何？\n何を覚えてる？\nexit\n' | run)
+          echo "$out"
+          echo "$out" | grep -q '^user> AlterEgo: ……（こくん）'
+          echo "$out" | grep -q '^user> AlterEgo: ……りんご？（わからない。教えて？）'
+          echo "$out" | grep -q '^user> AlterEgo: ……りんご、赤い果物。（覚えた）'
+          echo "$out" | grep -q '^user> AlterEgo: りんごは、赤い果物。'
+          echo "$out" | grep -q 'AlterEgo: 言葉: りんご: 赤い果物'
+          # the OS: time, files, a command, a taught ability, the action log; none of it is learned as words
+          f="$state/hello.txt"
+          out=$(printf "今何時？\n$f というファイルを作って\n$f に「やあ」と書いて\n$f を読んで\n実行して: echo one two\n挨拶と言ったら echo hello を実行して\n挨拶\nできること\n何をした？\n再起動して\nステータス\nexit\n" | run)
+          echo "$out"
+          echo "$out" | grep -q '^user> AlterEgo: 今は 20[0-9][0-9]年'
+          test "$(cat "$f")" = 'やあ'
+          echo "$out" | grep -q "^user> AlterEgo: $f の中身:"
+          echo "$out" | grep -q '^one two$'
+          echo "$out" | grep -q '^user> AlterEgo: 覚えた。「挨拶」と言われたら、echo hello をやる。'
+          echo "$out" | grep -q '^hello$'
+          echo "$out" | grep -q '「挨拶」 → echo hello'
+          echo "$out" | grep -q 'やったこと(新しいものが下):'
+          echo "$out" | grep -q 'ホストの上)ので、再起動はやめておく'
+          echo "$out" | grep -q '生まれたて(4 回話した'
+          test "$(cat "$state/skills.txt")" = "$(printf '挨拶\techo hello')"
+          grep -q 'echo one two' "$state/actions.log"
+          # the taught ability survives a restart; English works the same way
+          out=$(printf 'what is btrfs?\nbtrfs is a filesystem with snapshots\nwhat is btrfs?\n挨拶\nwhen i say greet, run echo hi there\ngreet\nforget greet\nwhat can you do\nexit\n' | run)
+          echo "$out"
+          echo "$out" | grep -q '^user> AlterEgo: \.\.\.btrfs? (I don'"'"'t know it. Tell me?)'
+          echo "$out" | grep -q '^user> AlterEgo: btrfs is a filesystem with snapshots\.'
+          echo "$out" | grep -q '^hello$'
+          echo "$out" | grep -q '^hi there$'
+          echo "$out" | grep -q '^user> AlterEgo: Forgot "greet"\.'
+          echo "$out" | grep -q '「挨拶」 → echo hello'
       - name: Screen checks (terminal emulator, romaji to kana, font)
         run: make -C src/screen test
       - name: Screen smoke test (headless desktop, typed kana reaches the agent)
