@@ -78,8 +78,18 @@ struct brain {
     char asked[8][64];              /* the last words it was asked about: "Xは…" later still defines them */
     int nasked;
     int just_defined;               /* the latest utterance was that definition */
+    int body;                       /* the machine's condition, 0 fine .. 3 struggling (body.c) */
     uint64_t rng;
 };
+
+void brain_set_body(struct brain *b, int level) { b->body = level < 0 ? 0 : level > 3 ? 3 : level; }
+
+static const char *body_word(const struct brain *b)
+{
+    static const char *const ja[] = { "元気", "ちょっと重い", "疲れている", "苦しい" };
+    static const char *const en[] = { "fine", "a bit heavy", "tired", "struggling" };
+    return (b->lang == BRAIN_EN ? en : ja)[b->body];
+}
 
 /* ---- language */
 
@@ -1265,6 +1275,18 @@ static int instinct_reply(struct brain *b, const struct persona *p, const char *
     }
     if (((has(in, "元気") || has(in, "げんき") || has(in, "調子")) && (is_question(in) || has(in, "どう"))) ||
         has(lo, "how are you") || has(lo, "how do you feel") || has(lo, "how's it going") || has(lo, "how is it going")) {
+        /* the body comes first: a loaded machine is a tired AlterEgo */
+        if (b->body >= 2) {
+            if (en) snprintf(out, cap, stage == 0 ? "... (droops)" : "...not so good. The machine is %s. Ask \"how is your body\" for the numbers.", body_word(b));
+            else if (stage == 0) snprintf(out, cap, "……（ぐったり）");
+            else SAY(b, out, cap, "……あんまり。体が%s。「体調は？」で詳しく話す。", "……あまり良くありません。体が%s状態です。「体調は？」で詳しくお話しします。", "うーん、%s……。「体調は？」って聞いて。", body_word(b));
+            return 1;
+        }
+        if (b->body == 1 && stage > 0) {
+            if (en) snprintf(out, cap, "Mostly fine, a bit heavy. And you, %s?", you);
+            else SAY(b, out, cap, "まあまあ。ちょっと重いけど。%sは？", "まずまずです。少し重いですが。%sさんは？", "まあ元気！ちょっと重いけど。%sは？", you);
+            return 1;
+        }
         if (en) snprintf(out, cap, stage == 0 ? "... (nods)" : cheer > 15 ? "Great! And you, %s?" : cheer < -15 ? "...a bit tired. And you, %s?" : "I'm fine. And you, %s?", you);
         else if (stage == 0) snprintf(out, cap, "……（こくん）");
         else if (cheer > 15) SAY(b, out, cap, "元気！%sは？", "元気です！%sさんは？", "元気元気！%sは？", you);
@@ -1377,18 +1399,18 @@ void brain_status(const struct brain *b, const struct persona *p, char *out, siz
         snprintf(traits + n, sizeof traits - n, "%s%s", n ? (b->lang == BRAIN_EN ? ", " : "、") : "", word);
     }
     if (b->lang == BRAIN_EN) {
-        snprintf(out, cap, "Name: %s. Your name: %s. Growth: %s (%d conversations%s%d%s). Personality: %s. Words learned: %d, memories: %d (ask \"what do you remember\").",
+        snprintf(out, cap, "Name: %s. Your name: %s. Growth: %s (%d conversations%s%d%s). Personality: %s. Condition: %s (ask \"how is your body\"). Words learned: %d, memories: %d (ask \"what do you remember\").",
                  b->own_name[0] ? b->own_name : "none yet (say \"your name is ...\")",
                  b->user_name[0] ? b->user_name : "not told yet (say \"my name is ...\")",
                  stage_name(b), b->nutt, stage < 3 ? ", " : "", next, stage < 3 ? " more to the next stage" : "",
-                 traits[0] ? traits : "nothing has sprouted yet", b->nwords, b->nfacts);
+                 traits[0] ? traits : "nothing has sprouted yet", body_word(b), b->nwords, b->nfacts);
         return;
     }
-    snprintf(out, cap, "名前: %s。%sの名前: %s。成長: %s(%d 回話した%s%d%s)。性格: %s。覚えた言葉 %d 語、覚えていること %d 件(「何を覚えてる？」で聞けます)。",
+    snprintf(out, cap, "名前: %s。%sの名前: %s。成長: %s(%d 回話した%s%d%s)。性格: %s。体調: %s(「体調は？」で詳しく)。覚えた言葉 %d 語、覚えていること %d 件(「何を覚えてる？」で聞けます)。",
              b->own_name[0] ? b->own_name : "まだない(「君の名前は〇〇」でつけてください)",
              you, b->user_name[0] ? b->user_name : "まだ聞いていない(「私の名前は〇〇」で教えてください)",
              stage_name(b), b->nutt, stage < 3 ? "、あと " : "", next, stage < 3 ? " 回で次の段階" : "",
-             traits[0] ? traits : "まだ芽生えていない", b->nwords, b->nfacts);
+             traits[0] ? traits : "まだ芽生えていない", body_word(b), b->nwords, b->nfacts);
 }
 
 void brain_memories(const struct brain *b, const struct persona *p, char *out, size_t cap)

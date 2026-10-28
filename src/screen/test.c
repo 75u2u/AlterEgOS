@@ -5,7 +5,9 @@
 #include <string.h>
 
 #include "canvas.h"
+#include "dict.h"
 #include "font.h"
+#include "ime.h"
 #include "kana.h"
 #include "term.h"
 
@@ -108,11 +110,102 @@ static void test_font(const char *path)
     font_free(&f);
 }
 
+static void type_keys(struct ime *m, const char *keys, char *out, size_t cap)
+{
+    size_t o = 0;
+    for (; *keys; keys++) {
+        char t[2] = { *keys, 0 };
+        if (*keys == '\n') t[0] = '\r';
+        o += ime_key(m, t, out + o, cap - o);
+    }
+    out[o] = '\0';
+}
+
+static void test_dict(const char *path)
+{
+    struct dict d;
+    CHECK(dict_load(&d, path) == 0, "dictionary %s loads", path);
+    if (!d.idx) return;
+    CHECK(d.n > 100000, "dictionary entries %d", d.n);
+    const char *c = dict_lookup(&d, "かんじ");
+    CHECK(c && strncmp(c, "漢字/", 6) == 0, "かんじ -> %s", c ? c : "(null)");
+    CHECK(dict_lookup(&d, "たべr") != NULL, "okuri-ari たべr");
+    CHECK(dict_lookup(&d, "ぞんざいなよみ") == NULL, "unknown reading");
+    CHECK(dict_okuri_letter(0x308B) == 'r', "る -> r");      /* る */
+    CHECK(dict_okuri_letter(0x3057) == 's', "し -> s");      /* し */
+    CHECK(dict_okuri_letter(0x3093) == 'n', "ん -> n");      /* ん */
+
+    char cands[IME_CANDS][DICT_CAND];
+    size_t seg;
+    int n = dict_convert(&d, "かんじ", cands, IME_CANDS, &seg);
+    CHECK(n >= 3 && strcmp(cands[0], "漢字") == 0 && seg == 9, "かんじ converts to %s (seg %zu)", cands[0], seg);
+    CHECK(strcmp(cands[n - 2], "かんじ") == 0 && strcmp(cands[n - 1], "カンジ") == 0, "hiragana and katakana last: %s %s", cands[n - 2], cands[n - 1]);
+    n = dict_convert(&d, "たべる", cands, IME_CANDS, &seg);
+    CHECK(n >= 1 && strcmp(cands[0], "食べる") == 0 && seg == 9, "たべる -> %s", cands[0]);
+    n = dict_convert(&d, "はなした", cands, IME_CANDS, &seg);
+    CHECK(n >= 1 && strcmp(cands[0], "話した") == 0, "はなした -> %s", cands[0]);
+    n = dict_convert(&d, "わたしは", cands, IME_CANDS, &seg);
+    CHECK(n >= 1 && strcmp(cands[0], "私は") == 0 && seg == 12, "わたしは -> %s (seg %zu)", cands[0], seg);
+    n = dict_convert(&d, "かんじ、", cands, IME_CANDS, &seg);
+    CHECK(n >= 1 && strcmp(cands[0], "漢字") == 0 && seg == 9, "かんじ、 -> %s + rest (seg %zu)", cands[0], seg);
+    n = dict_convert(&d, "ぞんざいなよみ", cands, IME_CANDS, &seg);
+    CHECK(n >= 1, "unknown still offers something: %s", cands[0]);
+
+    /* the IME on top: type, Space, Enter */
+    struct ime m;
+    char out[512];
+    ime_init(&m, &d);
+    type_keys(&m, "kannji", out, sizeof out);
+    CHECK(out[0] == '\0' && ime_active(&m), "preedit holds かんじ, nothing sent");
+    char shown[256]; size_t conv;
+    ime_shown(&m, shown, sizeof shown, &conv);
+    CHECK(strcmp(shown, "かんじ") == 0 && conv == 0, "shown %s", shown);
+    type_keys(&m, " ", out, sizeof out);
+    ime_shown(&m, shown, sizeof shown, &conv);
+    CHECK(m.converting && strcmp(shown, "漢字") == 0 && conv == 6, "after Space: %s", shown);
+    type_keys(&m, " ", out, sizeof out);
+    ime_shown(&m, shown, sizeof shown, &conv);
+    CHECK(strcmp(shown, "幹事") == 0, "second candidate: %s", shown);
+    type_keys(&m, "\n", out, sizeof out);
+    CHECK(strcmp(out, "幹事") == 0 && !ime_active(&m), "Enter commits %s", out);
+    type_keys(&m, "\n", out, sizeof out);
+    CHECK(strcmp(out, "\r") == 0, "Enter alone sends Enter");
+    /* a phrase: 漢字 + 、, converted in two steps; a digit picks; Backspace cancels */
+    type_keys(&m, "kannji, ", out, sizeof out);
+    ime_shown(&m, shown, sizeof shown, &conv);
+    CHECK(strcmp(shown, "漢字、") == 0 && conv == 6, "漢字 + 、 shown: %s", shown);
+    type_keys(&m, "\n", out, sizeof out);
+    CHECK(strcmp(out, "漢字") == 0 && strcmp(m.pre, "、") == 0, "commit 漢字, 、 stays (%s / %s)", out, m.pre);
+    type_keys(&m, "\n", out, sizeof out);
+    CHECK(strcmp(out, "、\r") == 0 && !ime_active(&m), "Enter commits the rest and sends: %s", out);
+    type_keys(&m, "gakusei 2", out, sizeof out);
+    CHECK(strlen(out) > 0 && !m.converting, "digit picks candidate 2: %s", out);
+    type_keys(&m, "\n", out, sizeof out);
+    type_keys(&m, "nani \x7f", out, sizeof out);
+    ime_shown(&m, shown, sizeof shown, &conv);
+    CHECK(!m.converting && strcmp(shown, "なに") == 0, "Backspace cancels conversion: %s", shown);
+    type_keys(&m, "\x1b", out, sizeof out);
+    CHECK(!ime_active(&m), "Escape clears");
+    type_keys(&m, "desu.\n", out, sizeof out);
+    CHECK(strcmp(out, "です。\r") == 0, "punctuation stays in the preedit, Enter sends: %s", out);
+    /* no dictionary: Space offers hiragana / katakana */
+    ime_init(&m, NULL);
+    type_keys(&m, "tesuto ", out, sizeof out);
+    ime_shown(&m, shown, sizeof shown, &conv);
+    CHECK(strcmp(shown, "てすと") == 0, "no dict, first: %s", shown);
+    type_keys(&m, " \n", out, sizeof out);
+    CHECK(strcmp(out, "テスト") == 0, "no dict, katakana: %s", out);
+    type_keys(&m, "\n", out, sizeof out);
+    CHECK(strcmp(out, "\r") == 0, "then Enter sends");
+    dict_free(&d);
+}
+
 int main(int argc, char **argv)
 {
     test_kana();
     test_term();
     test_font(argc > 1 ? argv[1] : "font.hex");
+    test_dict(argc > 2 ? argv[2] : "dict.txt");
     if (fails) { fprintf(stderr, "%d check(s) failed\n", fails); return 1; }
     puts("screen: all checks passed");
     return 0;

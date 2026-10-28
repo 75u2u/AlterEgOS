@@ -6,8 +6,8 @@
  * on its own pty: AlterEgo (the agent, chat) and a shell (busybox sh, the
  * escape hatch). Windows are raised, focused, moved and closed with the
  * mouse; the bar at the top has buttons to reopen them, to switch the
- * romaji-to-kana input on and off, and to reboot or power off (PID 1 does
- * the actual work when signalled).
+ * Japanese input (romaji to kana, Space for kanji) on and off, and to
+ * reboot or power off (PID 1 does the actual work when signalled).
  *
  * PID 1 starts this when the console is a screen (tty0). Without a
  * framebuffer it exits 127, and init falls back to the agent on tty1.
@@ -30,10 +30,11 @@
 #include <unistd.h>
 
 #include "canvas.h"
+#include "dict.h"
 #include "fb.h"
 #include "font.h"
+#include "ime.h"
 #include "input.h"
-#include "kana.h"
 #include "pty.h"
 #include "term.h"
 
@@ -57,6 +58,8 @@
 #define C_TITLE_U 0x3A4250
 #define C_BORDER  0x8A94A0
 #define C_PREEDIT 0xFFD866
+#define C_CONV    0x7FD8FF
+#define C_POPUP   0x2B3340
 #define C_CURSOR  0xE6E6E6
 
 enum { W_CHAT = 0, W_SHELL = 1 };
@@ -79,7 +82,8 @@ static struct canvas g_cv;
 static struct fb g_fb;
 static struct font g_font;
 static struct input g_in;
-static struct kana g_kana;
+static struct dict g_dict;
+static struct ime g_ime;
 static struct win g_win[WIN_MAX];
 static int g_order[WIN_MAX] = { W_SHELL, W_CHAT };     /* bottom to top */
 static int g_focus = W_CHAT;
@@ -257,10 +261,31 @@ static void draw_win(int i)
             font_draw(&g_font, &g_cv, ox + x * FONT_W, oy + y * FONT_H, cp, cursor ? C_WINBG : C_TEXT, cursor ? C_CURSOR : C_WINBG);
         }
     }
-    if (focused && g_kana_mode && g_kana.n > 0) {       /* romaji not yet a kana, at the cursor */
+    if (focused && g_kana_mode && ime_active(&g_ime)) {  /* the preedit, at the cursor */
+        char shown[IME_PRE + 64], popup[IME_CANDS * (DICT_CAND + 8)];
+        size_t conv;
+        int cur;
+        ime_shown(&g_ime, shown, sizeof shown, &conv);
         int px = ox + w->term.cx * FONT_W, py = oy + w->term.cy * FONT_H;
-        int ex = font_text(&g_font, &g_cv, px, py, g_kana.pend, C_PREEDIT, C_WINBG);
-        canvas_hline(&g_cv, px, py + FONT_H - 1, ex - px, C_PREEDIT);
+        int ex = px;
+        if (conv) {                                      /* the candidate, highlighted */
+            char head[IME_PRE];
+            snprintf(head, sizeof head, "%.*s", (int)conv, shown);
+            ex = font_text(&g_font, &g_cv, px, py, head, C_WINBG, C_CONV);
+        }
+        int ex2 = font_text(&g_font, &g_cv, ex, py, shown + conv, C_PREEDIT, C_WINBG);
+        canvas_hline(&g_cv, px, py + FONT_H - 1, ex2 - px, C_PREEDIT);
+        ime_popup(&g_ime, popup, sizeof popup, &cur);
+        if (popup[0]) {                                  /* the candidate list, under the cursor */
+            int pw = font_text_width(&g_font, popup) + 12;
+            int ppx = px, ppy = py + FONT_H + 2;
+            if (ppx + pw > g_cv.w) ppx = g_cv.w - pw;
+            if (ppx < 0) ppx = 0;
+            if (ppy + FONT_H + 4 > g_cv.h) ppy = py - FONT_H - 6;
+            canvas_fill(&g_cv, ppx, ppy, pw, FONT_H + 4, C_POPUP);
+            canvas_frame(&g_cv, ppx, ppy, pw, FONT_H + 4, C_BORDER);
+            font_text(&g_font, &g_cv, ppx + 6, ppy + 2, popup, C_BARTEXT, C_POPUP);
+        }
     }
 }
 
@@ -309,8 +334,8 @@ static void action(int a)
     case A_CHAT: raise_win(W_CHAT); break;
     case A_SHELL: raise_win(W_SHELL); break;
     case A_KANA: {
-        char out[32];
-        size_t n = kana_flush(&g_kana, out, sizeof out);
+        char out[IME_PRE + DICT_CAND];
+        size_t n = ime_flush(&g_ime, out, sizeof out);
         if (n) win_write(&g_win[g_focus], out, n);
         g_kana_mode = !g_kana_mode;
         g_dirty = 1;
@@ -357,22 +382,11 @@ static void on_key(const struct input_ev *e)
     if (!w->visible) { w->visible = 1; g_dirty = 1; }
     const char *t = e->text;
     if (g_kana_mode && !e->ctrl) {
-        char out[64];
-        size_t n;
-        if (t[0] == 0x7F && t[1] == '\0') {
-            if (kana_backspace(&g_kana)) { g_dirty = 1; return; }
-            win_write(w, t, 1);
-            return;
-        }
-        if ((unsigned char)t[0] >= 0x20 && (unsigned char)t[0] < 0x7F && t[1] == '\0') {
-            n = kana_feed(&g_kana, t[0], out, sizeof out);
-            if (n) win_write(w, out, n);
-            g_dirty = 1;
-            return;
-        }
-        n = kana_flush(&g_kana, out, sizeof out);
+        char out[IME_PRE + DICT_CAND + 16];
+        size_t n = ime_key(&g_ime, t, out, sizeof out);
         if (n) win_write(w, out, n);
         g_dirty = 1;
+        return;
     }
     win_write(w, t, strlen(t));
 }
@@ -449,6 +463,8 @@ int main(void)
     if (!fbdev) fbdev = "/dev/fb0";
     const char *fontpath = getenv("ALTEREGO_FONT");
     if (!fontpath) fontpath = "/usr/share/alterego/font.hex";
+    const char *dictpath = getenv("ALTEREGO_DICT");
+    if (!dictpath) dictpath = "/usr/share/alterego/dict.txt";
 
     /* Headless (tests, screenshots): ALTEREGO_HEADLESS=WxH draws into memory,
      * ALTEREGO_SNAPSHOT=file.ppm keeps the last frame, ALTEREGO_SCRIPT types
@@ -475,6 +491,7 @@ int main(void)
         return 1;
     }
     if (canvas_init(&g_cv, g_fb.w, g_fb.h) < 0) return 1;
+    if (dict_load(&g_dict, dictpath) < 0) kmsg("no kanji dictionary at %s (%s): kana only", dictpath, strerror(errno));
 
     if (!headless) {
         if (isatty(STDIN_FILENO)) g_vt_fd = STDIN_FILENO;
@@ -514,11 +531,11 @@ int main(void)
     win_init(&g_win[W_SHELL], "シェル (busybox sh)", sa_, scols, srows, g_fb.w - sw - 16, g_fb.h - sh - 16);
     g_mx = g_fb.w / 2;
     g_my = g_fb.h / 2;
-    kana_reset(&g_kana);
+    ime_init(&g_ime, g_dict.idx ? &g_dict : NULL);
     for (int i = 0; i < WIN_MAX; i++) win_spawn(&g_win[i]);
 
-    kmsg("up %dx%d %dbpp on %s, %d glyphs, %d keyboards, %d pointers, agent on pty",
-         g_fb.w, g_fb.h, g_fb.bpp, fbdev, g_font.n, kbd, ptr);
+    kmsg("up %dx%d %dbpp on %s, %d glyphs, %d dictionary entries, %d keyboards, %d pointers, agent on pty",
+         g_fb.w, g_fb.h, g_fb.bpp, fbdev, g_font.n, g_dict.n, kbd, ptr);
     render();
 
     time_t last_scan = time(NULL), last_minute = time(NULL) / 60;

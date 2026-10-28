@@ -49,6 +49,9 @@ int  brain_memories_count(const struct brain *b);
 const char *brain_user_name(const struct brain *b, const struct persona *p);
 const char *brain_own_name(const struct brain *b, const struct persona *p);
 
+/* The body's condition (body.h level 0..3): colours 「元気？」 and the status. */
+void brain_set_body(struct brain *b, int level);
+
 /* True for lines that ask about the mind itself (status, memories): they
  * are answered but not learned as utterances. */
 int brain_is_query(const char *line);

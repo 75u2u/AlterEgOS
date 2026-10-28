@@ -82,20 +82,47 @@ jobs:
           echo "$out" | grep -q '^hi there$'
           echo "$out" | grep -q '^user> AlterEgo: Forgot "greet"\.'
           echo "$out" | grep -q '「挨拶」 → echo hello'
-      - name: Screen checks (terminal emulator, romaji to kana, font)
-        run: make -C src/screen test
-      - name: Screen smoke test (headless desktop, typed kana reaches the agent)
+      - name: Agent smoke test (body and reset)
         run: |
           state=$(mktemp -d)
+          run() { ALTEREGO_STATE="$state" ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml ./src/agent/alterego; }
+          # it feels the machine: 「体調は？」 reports CPU, memory and processes; the status names the condition
+          out=$(printf 'こんにちは\n体調は？\nhow is your body\nステータス\nコーヒーが好き\n挨拶と言ったら echo hello を実行して\nexit\n' | run)
+          echo "$out"
+          echo "$out" | grep -q '^user> AlterEgo: いまは.*。CPU 使用率 [0-9]*%、メモリ空き [0-9]*%.*プロセス [0-9]* 個'
+          echo "$out" | grep -q '^user> AlterEgo: I'"'"'m .*\. CPU [0-9]*% busy, memory [0-9]*% free'
+          echo "$out" | grep -q '体調: .*(「体調は？」で詳しく)'
+          test -f "$state/utterances.txt" && test -f "$state/skills.txt"
+          # 「リセット」 erases the log, the personality and the taught abilities, and it is newborn again
+          out=$(printf 'おはよう\nリセット\n何を覚えてる？\nできること\nステータス\nexit\n' | run)
+          echo "$out"
+          echo "$out" | grep -q '^user> AlterEgo: ……おはよう？'
+          echo "$out" | grep -q '^user> AlterEgo: （記憶を消しました。生まれたてに戻ります。）'
+          echo "$out" | grep -q 'AlterEgo: はじめまして。まだ、なにも知りません'
+          echo "$out" | grep -q 'まだ何も覚えていません'
+          echo "$out" | grep -q '生まれたて(0 回話した'
+          test ! -e "$state/utterances.txt" && test ! -e "$state/personality.txt" && test ! -e "$state/skills.txt" && test ! -e "$state/actions.log"
+          # and so does the next run
+          out=$(printf 'おはよう\nexit\n' | run)
+          echo "$out" | grep -q 'AlterEgo: はじめまして。まだ、なにも知りません'
+      - name: Screen checks (terminal emulator, romaji to kana, kanji dictionary and conversion, font)
+        run: make -C src/screen test
+      - name: Screen smoke test (headless desktop, typed kana and converted kanji reach the agent)
+        run: |
+          state=$(mktemp -d)
+          # "kanji \n": Space converts かんじ to 漢字, Enter commits and sends; "watashiha \n" converts the prefix 私 and leaves は
           ALTEREGO_HEADLESS=1024x768 ALTEREGO_SNAPSHOT="$state/shot.ppm" \
-          ALTEREGO_SCRIPT=$'konnnichiha\nkyouhatsukaretanaa\nsute-tasu\n' ALTEREGO_SCRIPT_KANA=1 \
-          ALTEREGO_FONT=src/screen/font.hex ALTEREGO_AGENT="$PWD/src/agent/alterego" ALTEREGO_SHELL=/bin/sh \
+          ALTEREGO_SCRIPT=$'konnnichiha\nkyouhatsukaretanaa\nkannji \n\nwatashihakanji \n\nsute-tasu\n' ALTEREGO_SCRIPT_KANA=1 \
+          ALTEREGO_FONT=src/screen/font.hex ALTEREGO_DICT=src/screen/dict.txt \
+          ALTEREGO_AGENT="$PWD/src/agent/alterego" ALTEREGO_SHELL=/bin/sh \
           ALTEREGO_STATE="$state" ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml \
           timeout 60 ./src/screen/alterego-screen
           cat "$state/utterances.txt"
-          test "$(wc -l < "$state/utterances.txt")" = 2        # こんにちは, きょうはつかれたなあ (すてーたす is a query)
+          test "$(wc -l < "$state/utterances.txt")" = 4        # こんにちは, きょうはつかれたなあ, 漢字, 私はかんじ (すてーたす is a query)
           grep -q '^こんにちは$' "$state/utterances.txt"
-          grep -q '2 回話した' "$state/personality.txt"
+          grep -q '^漢字$' "$state/utterances.txt"
+          grep -q '^私はかんじ$' "$state/utterances.txt"
+          grep -q '4 回話した' "$state/personality.txt"
           python3 scripts/ppm2png.py "$state/shot.ppm" screenshot.png
       - name: Upload the desktop screenshot
         uses: actions/upload-artifact@v4

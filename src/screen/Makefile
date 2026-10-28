@@ -4,19 +4,19 @@ CFLAGS  ?= -O2
 CFLAGS  += -std=c17 -Wall -Wextra -Werror -Wpedantic
 LDFLAGS += -static
 
-SRC  = screen.c canvas.c fb.c font.c input.c kana.c pty.c term.c ../agent/utf8.c
-TSRC = test.c canvas.c font.c kana.c term.c ../agent/utf8.c
+SRC  = screen.c canvas.c dict.c fb.c font.c ime.c input.c kana.c pty.c term.c ../agent/utf8.c
+TSRC = test.c canvas.c dict.c font.c ime.c kana.c term.c ../agent/utf8.c
 
 all: alterego-screen
 
-alterego-screen: $(SRC) canvas.h fb.h font.h input.h kana.h pty.h term.h
+alterego-screen: $(SRC) canvas.h dict.h fb.h font.h ime.h input.h kana.h pty.h term.h
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
 
-screen-test: $(TSRC) canvas.h font.h kana.h term.h
+screen-test: $(TSRC) canvas.h dict.h font.h ime.h kana.h term.h
 	$(CC) $(CFLAGS) -o $@ $(TSRC) $(LDFLAGS)
 
 test: screen-test
-	./screen-test font.hex
+	./screen-test font.hex dict.txt
 
 check:
 	for f in $(SRC) test.c; do $(CC) $(CFLAGS) -fsyntax-only $$f || exit 1; done

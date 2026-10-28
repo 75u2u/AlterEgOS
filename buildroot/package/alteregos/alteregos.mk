@@ -28,6 +28,7 @@ define ALTEREGOS_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(@D)/agent/alterego $(TARGET_DIR)/usr/bin/alterego
 	$(INSTALL) -D -m 0755 $(@D)/screen/alterego-screen $(TARGET_DIR)/usr/bin/alterego-screen
 	$(INSTALL) -D -m 0644 $(@D)/screen/font.hex $(TARGET_DIR)/usr/share/alterego/font.hex
+	$(INSTALL) -D -m 0644 $(@D)/screen/dict.txt $(TARGET_DIR)/usr/share/alterego/dict.txt
 endef
 
 $(eval $(generic-package))
