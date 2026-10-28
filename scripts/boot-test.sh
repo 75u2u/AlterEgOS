@@ -26,7 +26,11 @@ LOG="$REPO/build/$ARCH/boot.log"
 
 WANT_INIT='\[init\] AlterEgOS .* booted'
 WANT_AGENT='AlterEgo: はじめまして'
+LABEL="$ARCH"
 if [ "$GUI" = 1 ]; then
+    # init's own line goes to the screen; the serial line only carries kmsg
+    LABEL="$ARCH, gui"
+    WANT_INIT='alteregos-init: AlterEgOS .* booted'
     WANT_AGENT='alterego-screen: up [0-9]*x[0-9]*'
     CONSOLE_X86="console=ttyS0 console=tty0"
     CONSOLE_ARM="console=ttyAMA0 console=tty0"
@@ -78,8 +82,8 @@ wait "$qemu" 2>/dev/null || true
 echo "== last 40 lines of $LOG"
 tail -n 40 "$LOG"
 if [ "$ok" = 0 ]; then
-    echo "== boot test ($ARCH${GUI:+, gui}): OK, init and AlterEgo both reported in"
+    echo "== boot test ($LABEL): OK, init and AlterEgo both reported in"
 else
-    echo "== boot test ($ARCH${GUI:+, gui}): FAILED (init: $(grep -c "$WANT_INIT" "$LOG"), agent/screen: $(grep -c "$WANT_AGENT" "$LOG"))"
+    echo "== boot test ($LABEL): FAILED (init: $(grep -c "$WANT_INIT" "$LOG"), agent/screen: $(grep -c "$WANT_AGENT" "$LOG"))"
 fi
 exit "$ok"
