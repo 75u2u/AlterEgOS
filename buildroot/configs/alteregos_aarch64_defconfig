@@ -4,6 +4,10 @@ BR2_cortex_a72=y
 
 BR2_TOOLCHAIN_BUILDROOT_MUSL=y
 BR2_TOOLCHAIN_BUILDROOT_CXX=y
+# Patches on top of Buildroot's own (board/alteregos/patches/<pkg>/<ver>/):
+# gcc 13.3.0's libcody does not build with a host compiler that defaults to
+# C++20 (GCC 16, e.g. on Kali/Debian sid); the patch is GCC's own fix
+BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_ALTEREGOS_PATH)/board/alteregos/patches"
 # Everything linked static: no shared-library setup to break
 BR2_STATIC_LIBS=y
 

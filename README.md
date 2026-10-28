@@ -56,9 +56,9 @@ AlterEgo の頭は本体に入っていて、ネットワークも API キーも
 
 Raspberry Pi 用の SD カードイメージはまだ無い(`alteregos-aarch64` は QEMU virt 向けのカーネルと initramfs)。
 
-## ビルドする(Ubuntu)
+## ビルドする(Ubuntu / Debian 系)
 
-Ubuntu(CI は 24.04)の x86_64 PC で。ビルドは Buildroot が全部やる(ツールチェイン、カーネル、busybox、この OS の init・エージェント・画面)。
+Ubuntu(CI は 24.04)か Debian 系(Kali でも可)の x86_64 PC で。ビルドは Buildroot が全部やる(ツールチェイン、カーネル、busybox、この OS の init・エージェント・画面)。
 
 **1. 必要なパッケージを入れる**
 
@@ -91,6 +91,11 @@ scripts/build.sh aarch64       # Raspberry Pi / QEMU virt 用。こちらも初�
 | `bzImage`(x86_64)/ `Image`(aarch64) | カーネル。x86_64 は initramfs 埋め込みで EFI アプリとしても起動できる |
 | `rootfs.cpio.gz` | initramfs(init、エージェント、画面、busybox、フォント、persona.toml) |
 | `alteregos-x86_64.img` | USB メモリに書く UEFI 起動イメージ(x86_64 のみ) |
+
+**ビルドが途中で止まったとき**
+
+- `libcody/client.cc: error: no match for 'operator=='`(`u8"TRUE"`)や `invalid conversion from 'const char8_t*'`: ホストの GCC が新しくて(GCC 16、Kali や Debian sid)C++20 が既定になり、Buildroot が作るクロスコンパイラ(gcc 13.3)の libcody が通らない。`git pull` すれば直る(`buildroot/board/alteregos/patches/` の GCC 本家の修正を当て、クロスコンパイラを gnu++17 でビルドする)。pull のあと `rm -rf build/x86_64/build/host-gcc-initial-13.3.0` してからビルドし直す。それでも別の場所で止まるなら、`sudo apt install g++-14` して `HOSTCC=gcc-14 HOSTCXX=g++-14 scripts/build.sh x86_64` と古い GCC でビルドする
+- `scripts/build.sh` の最後に `make: *** ... エラー` とだけ出て原因が見えない: `scripts/build.sh x86_64 2>&1 | tee build.log` で残して、`grep -n "error:" build.log` で最初のエラーを探す
 
 **4. 2 回目以降**
 
