@@ -20,6 +20,7 @@
 
 #include "brain.h"
 #include "persona.h"
+#include "skills.h"
 #include "store.h"
 
 #define LOG_FILE    "utterances.txt"
@@ -48,7 +49,7 @@ static void greet(const struct persona *p, const struct brain *b, const char *st
         else if (stage == 1) printf("\n%s: %s! ...hi.\n", me, you);
         else printf("\n%s: Good morning, %s. I'm %s. %d conversations so far.\n", me, you, me, brain_turns(b));
         if (!store) printf("%s: There is nowhere to write, so what I learn today is lost at the next boot.\n", me);
-        printf("%s: \"status\" tells how I am growing, \"what do you remember\" what I keep. \"exit\" ends this talk.\n\n", me);
+        printf("%s: \"status\" tells how I am growing, \"what do you remember\" what I keep, \"what can you do\" what I can do for you. \"exit\" ends this talk.\n\n", me);
         fflush(stdout);
         return;
     }
@@ -65,7 +66,7 @@ static void greet(const struct persona *p, const struct brain *b, const char *st
     }
     if (!store)
         printf("%s: 書き込める場所が無いので、今日覚えたことは次に起きたら忘れてしまいます。\n", me);
-    printf("%s: 「ステータス」で育ち具合、「何を覚えてる？」で覚えていることを話します。「君の名前は〇〇」で名前がつきます。「exit」で終わります。\n\n", me);
+    printf("%s: 「ステータス」で育ち具合、「何を覚えてる？」で覚えていること、「できること」で私にできることを話します。「君の名前は〇〇」で名前がつきます。「exit」で終わります。\n\n", me);
     fflush(stdout);
 }
 
@@ -91,6 +92,8 @@ int main(void)
     struct brain *b = brain_new(p.stage_turns);
     if (!b) return 1;
     const char *store = store_open();
+    struct skills *sk = skills_new();
+    if (!sk) return 1;
     if (store) {
         char *log = store_read_all(LOG_FILE);
         if (log) { brain_load_log(b, log); free(log); }
@@ -100,7 +103,7 @@ int main(void)
     kmsg_up(&p, brain_turns(b));
     greet(&p, b, store);
 
-    char reply[2048];
+    char reply[4096];
     char *line = NULL;
     size_t cap = 0;
     for (;;) {
@@ -112,6 +115,12 @@ int main(void)
         if (strcmp(line, "exit") == 0) break;
         if (line[0] == '\0') continue;
 
+        /* Something to do to the OS (the time, a file, a command, an ability
+         * it was taught) is done, not learned as a word. */
+        if (skills_handle(sk, brain_detect_lang(line, brain_lang(b)), brain_own_name(b, &p), brain_user_name(b, &p), line, reply, sizeof reply)) {
+            printf("%s: %s\n", brain_own_name(b, &p), reply);
+            continue;
+        }
         /* Asking about the mind itself ("ステータス", "what do you remember")
          * is a question to AlterEgo, not something to learn from. */
         if (!brain_is_query(line)) {
@@ -128,6 +137,7 @@ int main(void)
         printf("%s: %s\n", brain_own_name(b, &p), reply);
     }
     printf("%s: %s\n", brain_own_name(b, &p), brain_lang(b) == BRAIN_EN ? "See you later." : "またね。");
+    skills_free(sk);
     brain_free(b);
     return 0;
 }
