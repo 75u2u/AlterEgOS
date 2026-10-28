@@ -54,8 +54,15 @@ if [ ! -f "$OUT/.config" ]; then
     make -C "$BR_DIR" O="$OUT" BR2_EXTERNAL="$REPO/buildroot" "alteregos_${ARCH}_defconfig"
 fi
 
+# Buildroot sets HOSTCC/HOSTCXX with := so the environment cannot override
+# them; pass them on the make command line when given (HOSTCC=gcc-14
+# HOSTCXX=g++-14 scripts/build.sh x86_64 builds with an older host compiler).
+MAKE_ARGS=()
+[ -n "${HOSTCC:-}" ] && MAKE_ARGS+=("HOSTCC=$HOSTCC")
+[ -n "${HOSTCXX:-}" ] && MAKE_ARGS+=("HOSTCXX=$HOSTCXX")
+
 echo "== make $TARGET ($ARCH)"
-make -C "$BR_DIR" O="$OUT" BR2_EXTERNAL="$REPO/buildroot" "$TARGET"
+make -C "$BR_DIR" O="$OUT" BR2_EXTERNAL="$REPO/buildroot" ${MAKE_ARGS[@]+"${MAKE_ARGS[@]}"} "$TARGET"
 
 if [ "$TARGET" = "all" ]; then
     echo "== images in $OUT/images:"
