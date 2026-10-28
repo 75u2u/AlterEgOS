@@ -11,8 +11,15 @@
 # "up" on the kernel log, which the serial line carries. No window is opened
 # (-display none), so it runs on a CI runner.
 #
+# Without --gui the agent talks on the serial line, so the test also talks
+# back: it attaches a marked memory disk (the way run-qemu.sh does), says
+# 「こんにちは」, expects the newborn's echo and the kernel-log line that the
+# disk was formatted, then boots a second time and expects AlterEgo to
+# remember the conversation (it greets 「……user？」 instead of 「はじめまして」).
+#
 # Exit 0 when the expected lines appear, 1 otherwise; the full console log is
-# left in build/<arch>/boot.log (boot-gui.log for --gui).
+# left in build/<arch>/boot.log (boot-gui.log for --gui, boot2.log for the
+# second boot).
 set -euo pipefail
 
 ARCH="${1:-x86_64}"
@@ -61,29 +68,62 @@ else
     cmd+=(-nographic)
 fi
 
-: > "$LOG"
-"${cmd[@]}" </dev/null >"$LOG" 2>&1 &
-qemu=$!
+# One boot: wait for $1 and $2 in the log; with $3, type it once $1 and $2
+# have appeared and then wait for $4 as well. Sets ok=0 on success.
+boot() {
+    local want1="$1" want2="$2" say="${3:-}" want3="${4:-}" log="$5"
+    : > "$log"
+    local in
+    in=$(mktemp -u)
+    mkfifo "$in"
+    "${cmd[@]}" <"$in" >"$log" 2>&1 &
+    local qemu=$!
+    exec 3>"$in"           # keep the writer open so QEMU's stdin stays alive
+    rm -f "$in"
+    ok=1
+    local said=0
+    for ((i = 0; i < LIMIT; i++)); do
+        if grep -q "$want1" "$log" && grep -q "$want2" "$log"; then
+            if [ -z "$say" ]; then ok=0; break; fi
+            if [ "$said" = 0 ]; then sleep 2; printf '%s\n' "$say" >&3; said=1; fi
+            if grep -q "$want3" "$log"; then ok=0; break; fi
+        fi
+        if ! kill -0 "$qemu" 2>/dev/null; then
+            break   # QEMU exited (kernel panic + panic=5, or a bad image)
+        fi
+        sleep 1
+    done
+    exec 3>&-
+    kill "$qemu" 2>/dev/null || true
+    wait "$qemu" 2>/dev/null || true
+    echo "== last 40 lines of $log"
+    tail -n 40 "$log"
+}
 
-ok=1
-for ((i = 0; i < LIMIT; i++)); do
-    if grep -q "$WANT_INIT" "$LOG" && grep -q "$WANT_AGENT" "$LOG"; then
-        ok=0
-        break
+if [ "$GUI" = 1 ]; then
+    boot "$WANT_INIT" "$WANT_AGENT" "" "" "$LOG"
+else
+    # a fresh marked memory disk, as scripts/run-qemu.sh makes it
+    STATE="$REPO/build/$ARCH/boot-test-state.img"
+    rm -f "$STATE"
+    truncate -s 16M "$STATE"
+    printf 'ALTEREGO-STATE\n' | dd of="$STATE" conv=notrunc status=none
+    cmd+=(-drive file="$STATE",format=raw,if=virtio)
+    boot "$WANT_INIT" "$WANT_AGENT" "こんにちは" 'AlterEgo: ……こんにちは？' "$LOG"
+    if [ "$ok" = 0 ] && ! grep -q 'alterego: memory disk /dev/vd[a-z] formatted' "$LOG"; then
+        echo "== boot test ($LABEL): the memory disk was not formatted"
+        ok=1
     fi
-    if ! kill -0 "$qemu" 2>/dev/null; then
-        break   # QEMU exited (kernel panic + panic=5, or a bad image)
+    if [ "$ok" = 0 ]; then
+        LABEL="$ARCH, second boot"
+        boot "$WANT_INIT" 'AlterEgo: ……user？' "" "" "$REPO/build/$ARCH/boot2.log"
+        [ "$ok" = 0 ] && LABEL="$ARCH, memory kept across a reboot"
     fi
-    sleep 1
-done
-kill "$qemu" 2>/dev/null || true
-wait "$qemu" 2>/dev/null || true
+fi
 
-echo "== last 40 lines of $LOG"
-tail -n 40 "$LOG"
 if [ "$ok" = 0 ]; then
     echo "== boot test ($LABEL): OK, init and AlterEgo both reported in"
 else
-    echo "== boot test ($LABEL): FAILED (init: $(grep -c "$WANT_INIT" "$LOG"), agent/screen: $(grep -c "$WANT_AGENT" "$LOG"))"
+    echo "== boot test ($LABEL): FAILED (see the log above)"
 fi
 exit "$ok"

@@ -1,5 +1,6 @@
 # On top of Buildroot's default busybox config. busybox is the tty2 escape
-# shell and a diagnostics toolbox, not the init system.
+# shell and a diagnostics toolbox, not the init system. mkfs.vfat formats the
+# memory disk the agent finds marked (src/agent/store.c).
 CONFIG_INIT=n
 CONFIG_LINUXRC=n
 CONFIG_GETTY=n
@@ -7,3 +8,4 @@ CONFIG_LOGIN=n
 CONFIG_HALT=n
 CONFIG_POWEROFF=n
 CONFIG_REBOOT=n
+CONFIG_MKFS_VFAT=y

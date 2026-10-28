@@ -13,6 +13,14 @@
 # Also works standalone from an unpacked Release archive (the images are then
 # looked up next to this script instead of under build/<arch>/images).
 #
+# AlterEgo's memory: a -kernel boot has no USB stick to write to, so this
+# script keeps a small disk image next to the kernel (build/<arch>/state.img,
+# or state.img beside this script in an unpacked Release) and attaches it as
+# a second virtio disk. It starts as an empty file carrying the mark
+# "ALTEREGO-STATE"; the agent formats it (FAT) the first time and writes
+# alterego/ there, so what it learns survives reboots. Delete the file to
+# start from a blank memory (or say 「リセット」 in the chat).
+#
 # Quit by closing the QEMU window, or with Ctrl-A then X on this terminal.
 # With a window the kernel console is the screen, so init starts the desktop
 # there. With --serial the agent talks on the serial console instead; --efi
@@ -66,6 +74,20 @@ if [ "$GUI" = 1 ] && [ -f "$IMG/rootfs.cpio.gz" ] && command -v cpio >/dev/null;
     fi
 fi
 
+# The memory disk (see the top): made once, marked, then left to the agent.
+STATE="${ALTEREGO_STATE_IMG:-$IMG/state.img}"
+STATE_SIZE="${ALTEREGO_STATE_SIZE:-64M}"
+if [ ! -f "$STATE" ]; then
+    if truncate -s "$STATE_SIZE" "$STATE" 2>/dev/null && printf 'ALTEREGO-STATE\n' | dd of="$STATE" conv=notrunc status=none 2>/dev/null; then
+        echo "run-qemu.sh: made the memory disk $STATE ($STATE_SIZE); AlterEgo keeps what it learns there." >&2
+    else
+        rm -f "$STATE"
+        echo "run-qemu.sh: cannot make $STATE; AlterEgo will forget everything at the next boot." >&2
+    fi
+fi
+STATE_ARGS=()
+[ -f "$STATE" ] && STATE_ARGS=(-drive file="$STATE",format=raw,if=virtio)
+
 # Window mode: the screen, keyboard and an absolute-position mouse
 # (virtio-tablet, so the pointer follows the host's without grabbing it);
 # the serial console stays on this terminal for the kernel log.
@@ -103,6 +125,7 @@ case "$ARCH" in
             -machine q35,accel=kvm:tcg -cpu max -m "$MEM" -smp 2 \
             -kernel "$IMG/bzImage" -initrd "$IMG/rootfs.cpio.gz" \
             -append "$CONSOLE_X86 init=/sbin/init quiet" \
+            "${STATE_ARGS[@]}" \
             -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
             -device virtio-rng-pci -vga std \
             "${DISPLAY_ARGS[@]}" ${QEMU_EXTRA:-}
@@ -112,6 +135,7 @@ case "$ARCH" in
             -machine virt -cpu cortex-a72 -m "$MEM" -smp 2 \
             -kernel "$IMG/Image" -initrd "$IMG/rootfs.cpio.gz" \
             -append "$CONSOLE_ARM init=/sbin/init quiet" \
+            "${STATE_ARGS[@]}" \
             -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
             -device virtio-rng-pci -device virtio-gpu-pci \
             "${DISPLAY_ARGS[@]}" ${QEMU_EXTRA:-}
