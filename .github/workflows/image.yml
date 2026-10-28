@@ -79,6 +79,9 @@ jobs:
       - name: Boot test in QEMU
         run: scripts/boot-test.sh ${{ matrix.arch }} 300
 
+      - name: Boot test with a screen (the way run-qemu.sh boots by default)
+        run: scripts/boot-test.sh ${{ matrix.arch }} 300 --gui
+
       - name: Boot test through UEFI firmware (USB image)
         if: matrix.arch == 'x86_64'
         run: scripts/boot-test-efi.sh 300

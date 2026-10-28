@@ -57,6 +57,15 @@ pick_display() {
     echo "gtk"
 }
 
+# An image built before the screen existed boots the agent on the serial
+# console and leaves the window black: say so instead of looking broken.
+if [ "$GUI" = 1 ] && [ -f "$IMG/rootfs.cpio.gz" ] && command -v cpio >/dev/null; then
+    if ! gzip -dc "$IMG/rootfs.cpio.gz" 2>/dev/null | cpio -t 2>/dev/null | grep -q 'usr/bin/alterego-screen$'; then
+        echo "run-qemu.sh: $IMG/rootfs.cpio.gz has no screen program (built before src/screen existed?)." >&2
+        echo "run-qemu.sh: the window will stay black; rebuild with scripts/build.sh $ARCH, or use --serial." >&2
+    fi
+fi
+
 # Window mode: the screen, keyboard and an absolute-position mouse
 # (virtio-tablet, so the pointer follows the host's without grabbing it);
 # the serial console stays on this terminal for the kernel log.
