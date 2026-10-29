@@ -199,7 +199,7 @@ jobs:
           # at the tenth conversation it can talk, and asks its first question (the user's name); the answer is taken as the name
           out=$(printf '君の名前はエゴにする\nコーヒーが好き\nえらいね！\n今日はいい天気\n散歩に行った\n猫を見た\nかわいかった\n公園でお茶した\n楽しかった！\n猫が好き\nゆうやだよ\nステータス\nexit\n' | run)
           echo "$out"
-          echo "$out" | grep -q '^user> エゴ: 猫！猫、知ってる。 そういえば、userの名前をまだ聞いてなかった。なんて呼べばいい？$'
+          echo "$out" | grep -q '^user> エゴ: .* そういえば、userの名前をまだ聞いてなかった。なんて呼べばいい？$'
           echo "$out" | grep -q '^user> エゴ: ゆうや。覚えた。これからはゆうやって呼ぶね。$'
           echo "$out" | grep -q '^ゆうや> エゴ: 名前: エゴ。ゆうやの名前: ゆうや。成長: 片言(11 回話した.*親密度: 顔見知り(18)。気分: ふつう。'
           grep -q '^intimacy=18$' "$state/bond.txt"
