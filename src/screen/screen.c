@@ -292,8 +292,8 @@ static void handle_osc(const char *osc)
     if (strcmp(cmd, "draw") == 0 && i == W_PAINT) {               /* AlterEgo draws: run the spec, keep the picture */
         struct win *w = &g_win[W_PAINT];
         if (paint_run(&w->paint, p) > 0) {
-            paint_save(&w->paint, g_save_dir);
-            snprintf(w->paint.msg, sizeof w->paint.msg, "AlterEgo が描いた");
+            if (w->paint.strokes) { paint_save(&w->paint, g_save_dir); snprintf(w->paint.msg, sizeof w->paint.msg, "AlterEgo が描いた"); }
+            else snprintf(w->paint.msg, sizeof w->paint.msg, "AlterEgo が白くした");
         }
         show_win(W_PAINT, 1);
         return;

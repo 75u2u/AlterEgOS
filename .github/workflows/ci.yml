@@ -166,6 +166,32 @@ jobs:
           echo "$out" | grep -q $'^user> AlterEgo: I drew a cat in paint\. Have a look, user\.\e\]7700;draw;paint;c 800 520 280 '
           echo "$out" | grep -q '^user> AlterEgo: それはまだ描けない。描けるのは: 丸、線、四角、三角、星、ハート、顔、太陽、家、木、花、山、猫、魚、車。'
           echo "$out" | grep -q 'userに顔を描いてあげた'
+      - name: Agent smoke test (learning new drawings from words and from a picture)
+        run: |
+          state=$(mktemp -d)
+          run() { ALTEREGO_STATE="$state" ALTEREGO_SCREEN=1 ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml ./src/agent/alterego; }
+          pics=$(mktemp -d)
+          python3 scripts/shape-pictures.py "$pics"
+          out=$(printf '雪だるまはこう描く: 大きい丸の上に小さい丸\n雪だるまを描いて\nお城はこう描く: 塔の隣に家\n絵を見て: %s\nこれはボール\nボールを描いて\n描けるもの\nexit\n' "$pics/disk.ppm" | run)
+          echo "$out" | cat -v
+          echo "$out" | grep -q '^user> AlterEgo: 覚えた。これからは「雪だるまを描いて」でそう描くよ。'
+          echo "$out" | grep -q $'^user> AlterEgo: 雪だるまを描いたよ。ペイントを見て、user。\e\]7700;draw;paint;k 000000 c 800 620 328 k 000000 c 800 161 109 \e\\\\'
+          echo "$out" | grep -q '^user> AlterEgo: 「塔」の描き方をまだ知らない。先にそれを教えて。'
+          echo "$out" | grep -q '^user> AlterEgo: そうか、これがボールなんだ。覚えた。「ボールを描いて」で描くよ。'
+          echo "$out" | grep -q $'^user> AlterEgo: ボールを描いたよ。ペイントを見て、user。\e\]7700;draw;paint;i '"$state"$'/drawings/ボール.ppm 600 300 1002 702\e\\\\'
+          echo "$out" | grep -q '^user> AlterEgo: 描けるのは: 丸、線、四角、三角、星、ハート、顔、太陽、家、木、花、山、猫、魚、車、雪だるま、ボール。'
+          test -f "$state/drawings/ボール.ppm"
+          grep -q '^雪だるま	k 000000 c 800 620 328 k 000000 c 800 161 109 $' "$state/drawings.txt"
+          # they survive a restart, can be forgotten, and English works too
+          out=$(printf '雪だるまを描いて\n雪だるまの描き方を忘れて\n雪だるまを描いて\na robot is drawn like this: a big square, a small circle above it, a line below the square\ndraw a robot\nforget how to draw robot\nwhat can you draw\nexit\n' | run)
+          echo "$out" | cat -v
+          echo "$out" | grep -q $'^user> AlterEgo: 雪だるまを描いたよ。.*\e\]7700;draw;paint;k 000000 c 800 620 328 '
+          echo "$out" | grep -q '^user> AlterEgo: 雪だるまの描き方を忘れた。'
+          echo "$out" | grep -q '^user> AlterEgo: それはまだ描けない。描けるのは: .*ボール。'
+          echo "$out" | grep -q '^user> AlterEgo: Got it. That is how I draw robot now. Say "draw robot" and I will.'
+          echo "$out" | grep -q $'^user> AlterEgo: I drew a robot in paint. Have a look, user.\e\]7700;draw;paint;k 000000 p 5 .* k 000000 c .* k 000000 l '
+          echo "$out" | grep -q '^user> AlterEgo: Forgot how to draw robot.'
+          echo "$out" | grep -q '^user> AlterEgo: I can draw: circle, line, square, triangle, star, heart, face, sun, house, tree, flower, mountain, cat, fish, car, ボール\.'
       - name: Screen checks (terminal emulator, romaji to kana, paint, kanji dictionary and conversion, font)
         run: make -C src/screen test
       - name: Browser checks (URL resolution, HTML to text, layout)
@@ -282,6 +308,34 @@ jobs:
           grep -q '^== ペイント$' "$state/windows.txt"
           grep -q '^(paint 640x400, 1 strokes)' "$state/windows.txt"
           python3 scripts/ppm2png.py "$state/shot.ppm" screenshot-draw.png
+      - name: Screen smoke test (a drawing taught from the picture shown and from words is drawn again)
+        run: |
+          state=$(mktemp -d)
+          # a red stroke, 見せる, 「これはにんじん」, then the sheet is cleared and 「にんじんを描いて」 pastes it back
+          ALTEREGO_HEADLESS=1024x768 ALTEREGO_SNAPSHOT="$state/shot.ppm" ALTEREGO_DUMP="$state/windows.txt" \
+          ALTEREGO_SCRIPT=$'これはにんじん\n全部消して\nにんじんを描いて\n' ALTEREGO_SCRIPT_WIN=paint \
+          ALTEREGO_SCRIPT_MOUSE="247,101,d;247,101,u;300,300,d;400,350,m;400,350,u;787,101,d;787,101,u" \
+          ALTEREGO_FONT=src/screen/font.hex ALTEREGO_DICT=src/screen/dict.txt \
+          ALTEREGO_AGENT="$PWD/src/agent/alterego" ALTEREGO_SHELL=/bin/sh ALTEREGO_WEB="$PWD/src/web/alterego-web" \
+          ALTEREGO_STATE="$state" ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml \
+          timeout 90 ./src/screen/alterego-screen
+          cat "$state/windows.txt"
+          grep -q '^AlterEgo: そうか、これがにんじんなんだ。覚えた。' "$state/windows.txt"
+          grep -q '^AlterEgo: 紙を白くしたよ。' "$state/windows.txt"
+          grep -q '^AlterEgo: にんじんを描いたよ。' "$state/windows.txt"
+          grep -q '^(paint 640x400, 1 strokes)' "$state/windows.txt"          # the pasted picture, on the cleared sheet
+          test -f "$state/drawings/にんじん.ppm"
+          python3 scripts/ppm2png.py "$state/shot.ppm" screenshot-teach.png
+          # taught in words, drawn, and seen as two circles
+          ALTEREGO_HEADLESS=1024x768 ALTEREGO_DUMP="$state/windows.txt" \
+          ALTEREGO_SCRIPT=$'雪だるまはこう描く: 大きい丸の上に小さい丸\n雪だるまを描いて\n絵を見て\n' \
+          ALTEREGO_FONT=src/screen/font.hex ALTEREGO_DICT=src/screen/dict.txt \
+          ALTEREGO_AGENT="$PWD/src/agent/alterego" ALTEREGO_SHELL=/bin/sh ALTEREGO_WEB="$PWD/src/web/alterego-web" \
+          ALTEREGO_STATE="$state" ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml \
+          timeout 90 ./src/screen/alterego-screen
+          cat "$state/windows.txt"
+          grep -q '^AlterEgo: 覚えた。これからは「雪だるまを描いて」でそう描くよ。' "$state/windows.txt"
+          grep -q '^AlterEgo: （じっと見る）……黒の絵だ。丸が 2 つに見える。' "$state/windows.txt"
       - name: Upload the desktop screenshots
         uses: actions/upload-artifact@v4
         with:
@@ -292,6 +346,7 @@ jobs:
             screenshot-paint.png
             screenshot-show.png
             screenshot-draw.png
+            screenshot-teach.png
       - name: Init refuses to run outside PID 1
         run: |
           if ./src/init/alteregos-init; then echo "init should have refused"; exit 1; fi

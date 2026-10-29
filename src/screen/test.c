@@ -283,6 +283,19 @@ static void test_paint(const char *fontpath)
     CHECK(p.strokes == 1 && p.color == pen_color && p.size == pen_size, "run keeps the user's pen");
     CHECK(paint_run(&p, "e") == 1 && p.strokes == 0 && paint_pixel(&p, 30, 30) == 0xFFFFFF, "e empties the sheet");
     CHECK(paint_run(&p, "x 1 2") == 0, "unknown command draws nothing");
+    /* i: a saved picture's ink pasted into a box (the earlier red dot, saved again) */
+    paint_press(&p, &f, 6 + 2 * 20 + 5, 10, NULL);
+    paint_press(&p, &f, 100, PAINT_TB_H + 50, NULL);
+    paint_release(&p);
+    char dir2[] = "/tmp/alterego-paste-XXXXXX";
+    CHECK(mkdtemp(dir2) != NULL && paint_save(&p, dir2) == 0, "save for paste");
+    paint_clear(&p);
+    char cmd[640];
+    snprintf(cmd, sizeof cmd, "i %s 3000 100 3500 600", p.last);        /* units of h/1000 = 0.1 px: the box 300..350 x 10..60 */
+    CHECK(paint_run(&p, cmd) == 1 && p.strokes == 1, "paste runs");
+    CHECK(paint_pixel(&p, 325, 35) == paint_palette[2] && paint_pixel(&p, 100, 50) == 0xFFFFFF, "pasted ink scaled into the box");
+    remove(p.last);
+    rmdir(dir2);
     /* draws without touching pixels outside its box */
     struct canvas c;
     canvas_init(&c, 300, 200);
