@@ -102,7 +102,7 @@ scripts/build.sh aarch64       # Raspberry Pi / QEMU virt 用。こちらも初�
 **4. 2 回目以降**
 
 ```sh
-scripts/build.sh x86_64 alteregos-rebuild   # src/ だけ直したとき。数秒〜数十秒
+scripts/build.sh x86_64 alteregos-rebuild   # src/ だけ直したとき。数秒〜数十秒(build.sh は src/ が前回より新しければ自動でこれをやる)
 scripts/build.sh x86_64                     # 全体。変更が無いところは飛ばすので数分
 scripts/build.sh x86_64 menuconfig          # Buildroot の設定を変える(defconfig は buildroot/configs/)
 ```

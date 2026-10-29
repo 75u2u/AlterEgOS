@@ -68,9 +68,13 @@ pick_display() {
 # An image built before the screen existed boots the agent on the serial
 # console and leaves the window black: say so instead of looking broken.
 if [ "$GUI" = 1 ] && [ -f "$IMG/rootfs.cpio.gz" ] && command -v cpio >/dev/null; then
-    if ! gzip -dc "$IMG/rootfs.cpio.gz" 2>/dev/null | cpio -t 2>/dev/null | grep -q 'usr/bin/alterego-screen$'; then
+    files=$(gzip -dc "$IMG/rootfs.cpio.gz" 2>/dev/null | cpio -t 2>/dev/null || true)
+    if ! grep -q 'usr/bin/alterego-screen$' <<<"$files"; then
         echo "run-qemu.sh: $IMG/rootfs.cpio.gz has no screen program (built before src/screen existed?)." >&2
         echo "run-qemu.sh: the window will stay black; rebuild with scripts/build.sh $ARCH, or use --serial." >&2
+    elif ! grep -q 'usr/bin/alterego-web$' <<<"$files"; then
+        echo "run-qemu.sh: $IMG/rootfs.cpio.gz has no browser (built before src/web existed?): no ブラウザ button." >&2
+        echo "run-qemu.sh: rebuild with scripts/build.sh $ARCH (it rebuilds the alteregos package when src/ changed)." >&2
     fi
 fi
 
