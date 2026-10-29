@@ -2,7 +2,7 @@
 CC      ?= gcc
 CFLAGS  ?= -O2
 CFLAGS  += -std=c17 -Wall -Wextra -Werror -Wpedantic
-LDFLAGS += -static
+LDFLAGS += -static -lm
 
 SRC  = screen.c canvas.c dict.c fb.c font.c ime.c input.c kana.c paint.c pty.c term.c ../agent/utf8.c
 TSRC = test.c canvas.c dict.c font.c ime.c kana.c paint.c term.c ../agent/utf8.c

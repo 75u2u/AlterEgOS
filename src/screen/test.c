@@ -274,6 +274,15 @@ static void test_paint(const char *fontpath)
     paint_clear(&p);
     CHECK(paint_press(&p, &f, sx, 10, dir) == PAINT_NONE && strstr(p.msg, "まだ何も") == p.msg, "nothing to show '%s'", p.msg);
     CHECK(paint_pixel(&p, 100, 50) == 0xFFFFFF && p.strokes == 0, "cleared");
+    /* paint_run: AlterEgo's drawing commands, in 1/1000 of the height (100 px here) */
+    uint32_t pen_color = p.color; int pen_size = p.size;
+    CHECK(paint_run(&p, "k E53935 C 300 300 100 k 1E88E5 s 20 l 4000 500 5000 500 p 3 1000 100 1200 100 1200 300") == 6, "run commands");
+    CHECK(paint_pixel(&p, 30, 30) == 0xE53935 && paint_pixel(&p, 30, 36) == 0xE53935 && paint_pixel(&p, 30, 42) == 0xFFFFFF, "filled circle r=10");
+    CHECK(paint_pixel(&p, 450, 50) == 0x1E88E5 && paint_pixel(&p, 450, 56) == 0xFFFFFF, "thick line");
+    CHECK(paint_pixel(&p, 110, 10) == 0x1E88E5 && paint_pixel(&p, 120, 20) == 0x1E88E5, "polyline");
+    CHECK(p.strokes == 1 && p.color == pen_color && p.size == pen_size, "run keeps the user's pen");
+    CHECK(paint_run(&p, "e") == 1 && p.strokes == 0 && paint_pixel(&p, 30, 30) == 0xFFFFFF, "e empties the sheet");
+    CHECK(paint_run(&p, "x 1 2") == 0, "unknown command draws nothing");
     /* draws without touching pixels outside its box */
     struct canvas c;
     canvas_init(&c, 300, 200);
