@@ -452,14 +452,20 @@ static void test_face(const char *fontpath)
     for (int y = 0; y < cv.h; y++) for (int x = 0; x < cv.w; x++)
         if ((x < 10 || y < 10 || x >= 10 + FACE_W || y >= 10 + FACE_H) && cv.px[(size_t)y * cv.w + x] != 0x123456) outside++;
     CHECK(outside == 0, "%d pixels outside the box", outside);
-    /* the stage changes the look: a newborn has no ears yet, from 片言 it has */
+    /* the look is chosen: model 1 is the maid android, skin in the middle instead of a screen */
     canvas_fill(&cv, 0, 0, cv.w, cv.h, 0x123456);
-    face_set(&fc, "mood=0;bond=0;stage=0;body=0;expr=;say=0", now);
+    face_set(&fc, "mood=0;bond=0;stage=0;body=0;model=1;expr=;say=0", now);
     face_draw(&fc, &cv, &f, 10, 10, now);
-    CHECK(cv.px[(size_t)(10 + 100) * cv.w + 10 + 196] == 0x123456, "newborn has no ear: %06x", cv.px[(size_t)(10 + 100) * cv.w + 10 + 196]);
-    face_set(&fc, "mood=0;bond=0;stage=1;body=0;expr=;say=0", now);
+    CHECK(fc.model == 1 && cv.px[(size_t)(10 + 100) * cv.w + 10 + FACE_W / 2] == 0xFFEFE4, "the maid's skin at the centre: %06x", cv.px[(size_t)(10 + 100) * cv.w + 10 + FACE_W / 2]);
+    outside = 0;
+    for (int y = 0; y < cv.h; y++) for (int x = 0; x < cv.w; x++)
+        if ((x < 10 || y < 10 || x >= 10 + FACE_W || y >= 10 + FACE_H) && cv.px[(size_t)y * cv.w + x] != 0x123456) outside++;
+    CHECK(outside == 0, "maid: %d pixels outside the box", outside);
+    face_set(&fc, "mood=0;bond=0;stage=0;body=0;model=7;expr=;say=0", now);
+    CHECK(fc.model == 1, "model clamped: %d", fc.model);
+    face_set(&fc, "mood=0;bond=0;stage=0;body=0;model=0;expr=;say=0", now);
     face_draw(&fc, &cv, &f, 10, 10, now);
-    CHECK(cv.px[(size_t)(10 + 100) * cv.w + 10 + 196] != 0x123456, "片言 has an ear");
+    CHECK(cv.px[(size_t)(10 + 100) * cv.w + 10 + FACE_W / 2] == 0x1B2535, "the robot's screen at the centre");
     canvas_free(&cv);
     font_free(&f);
 }

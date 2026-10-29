@@ -718,7 +718,7 @@ static void dump_windows(const char *path)
         if (g_win[i].kind == WK_PAINT) { fprintf(f, "(paint %dx%d, %d strokes)\n", g_win[i].paint.w, g_win[i].paint.h, g_win[i].paint.strokes); continue; }
         if (g_win[i].kind == WK_FACE) {
             long now = now_ms();
-            fprintf(f, "(face stage=%d mood=%d bond=%d body=%d expr=%s label=%s)\n", g_face.stage, g_face.mood, g_face.bond, g_face.body, face_expr(&g_face, now), g_face.label);
+            fprintf(f, "(face stage=%d mood=%d bond=%d body=%d model=%d expr=%s label=%s)\n", g_face.stage, g_face.mood, g_face.bond, g_face.body, g_face.model, face_expr(&g_face, now), g_face.label);
             continue;
         }
         char row[1024];

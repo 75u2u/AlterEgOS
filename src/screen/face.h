@@ -13,9 +13,10 @@
  * keeps the face alive between those: it blinks, breathes, follows the
  * mouse with its eyes, moves its mouth while the words come out, looks up
  * when the user types, gets drowsy and falls asleep when left alone, and
- * grows with the agent's stage (ears, then a star). Only the head is
- * shown: a small friendly robot whose eyes and mouth are light on a face
- * screen. face_tick says whether the next frame would differ from the
+ * grows with the agent's stage. Only the head is shown. The look (model)
+ * is the user's choice, told by the agent: 0 = a small friendly robot
+ * whose eyes and mouth are light on a face screen, 1 = a maid android
+ * with cat ears and an intercom headset. face_tick says whether the next frame would differ from the
  * last one drawn, so that the desktop redraws only when something moved. The expression (happy, sad, shy, curious, puzzled, surprised,
  * nod, love, angry, tired, dizzy, sleep, drowsy, listen, calm) is either
  * what the agent just said it feels, for a few seconds, or what its mood,
@@ -29,6 +30,7 @@ struct face {
     int bond;                   /* 0..100 */
     int stage;                  /* 0..3 */
     int body;                   /* 0 fine .. 3 struggling */
+    int model;                  /* the look: 0 robot, 1 maid android */
     char expr[16];              /* what the agent said it feels, "" = derive */
     long expr_until;            /* ms: how long that holds */
     long say_until;             /* ms: the mouth moves until then */

@@ -322,6 +322,7 @@ static const struct { const char *ja, *en; } ability_names[] = {
     { "絵を見て(ペイントで描いた絵の色・形・感想)", "look at my drawing (the colors and shapes I see in the paint picture)" },
     { "顔を描いて / 赤いハートを描いて / 描けるもの(ペイントに描く)", "draw a face / draw a red heart / what can you draw (in paint)" },
     { "これは雪だるま(見せた絵の描き方を覚える) / 雪だるまはこう描く: 大きい丸の上に小さい丸 / 雪だるまの描き方を忘れて", "this is a snowman (learn the picture shown) / a snowman is drawn like this: a big circle, a small circle above it / forget how to draw snowman" },
+    { "メイドになって / ロボットになって / どんな姿が選べる？(画面の姿)", "be the maid / be the robot / what looks can you take (the look on the screen)" },
     { "「X」と言ったら「Y」を実行して(新しいできることを覚える)", "when I say X, run Y (learn a new ability)" },
     { "何をした？(やったことの記録)", "what did you do (the action log)" },
     { NULL, NULL }
