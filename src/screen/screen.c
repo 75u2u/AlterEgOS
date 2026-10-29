@@ -268,9 +268,6 @@ static void draw_bar(void)
     g_menu_x = x;
     g_menu_y = BAR_H;
     button(x, 3, "メニュー", g_menu_open, A_MENU);
-    x += font_text_width(&g_font, "メニュー") + 12 + 6;
-    const struct win *fw = &g_win[g_focus];
-    if (fw->visible) font_text(&g_font, &g_cv, x + 4, 4, fw->title, C_BARTEXT, C_BAR);   /* what has the keyboard */
 
     char clock[16];
     time_t now = time(NULL);
