@@ -8,6 +8,7 @@
 
 #include "canvas.h"
 #include "dict.h"
+#include "face.h"
 #include "font.h"
 #include "ime.h"
 #include "kana.h"
@@ -49,6 +50,15 @@ static void test_kana(void)
 }
 
 static void feed(struct term *t, const char *s) { term_feed(t, s, strlen(s)); }
+
+static char oscs[4][64];
+static int noscs;
+static void count_osc(struct term *t, const char *osc, void *arg)
+{
+    (void)t; (void)arg;
+    if (noscs < 4) snprintf(oscs[noscs], sizeof oscs[0], "%s", osc);
+    noscs++;
+}
 
 static void test_term(void)
 {
@@ -108,6 +118,13 @@ static void test_term(void)
     CHECK(!t.osc_ready, "dcs not reported");
     term_row(&t, 0, row, sizeof row);
     CHECK(strcmp(row, "XYZ") == 0, "osc hidden '%s'", row);
+    /* with a callback, two OSCs in one read both arrive (an open request and the face's state on one line) */
+    t.on_osc = count_osc;
+    t.osc_arg = oscs;
+    noscs = 0;
+    feed(&t, "a\x1b]7700;open;paint\x1b\\\x1b]7700;face;mood=1\x1b\\b");
+    CHECK(noscs == 2 && strcmp(oscs[0], "7700;open;paint") == 0 && strcmp(oscs[1], "7700;face;mood=1") == 0, "two oscs: %d", noscs);
+    CHECK(!t.osc_ready, "osc_ready stays clear with a callback");
     term_free(&t);
 }
 
@@ -385,11 +402,68 @@ static void test_paint(const char *fontpath)
     font_free(&f);
 }
 
+/* The face: the agent's state is parsed, the expression follows it, the
+ * mood, the body and the silence, and it draws. */
+static void test_face(const char *fontpath)
+{
+    struct font f;
+    if (font_load(&f, fontpath) < 0) { CHECK(0, "font %s", fontpath); return; }
+    struct face fc;
+    long now = 500000;
+    face_init(&fc, now);
+    CHECK(strcmp(face_expr(&fc, now), "calm") == 0, "newborn calm: %s", face_expr(&fc, now));
+    face_set(&fc, "mood=45;bond=70;stage=2;body=0;expr=;say=0", now);
+    CHECK(fc.mood == 45 && fc.bond == 70 && fc.stage == 2 && fc.body == 0, "parsed %d %d %d %d", fc.mood, fc.bond, fc.stage, fc.body);
+    CHECK(strcmp(face_expr(&fc, now), "happy") == 0, "good mood: %s", face_expr(&fc, now));
+    face_set(&fc, "mood=-50;bond=70;stage=2;body=0;expr=;say=0", now);
+    CHECK(strcmp(face_expr(&fc, now), "sad") == 0, "bad mood: %s", face_expr(&fc, now));
+    /* a told expression holds a few seconds, then the mood shows again; the mouth moves while it speaks */
+    face_set(&fc, "mood=-50;bond=70;stage=2;body=0;expr=puzzled;say=10", now);
+    CHECK(strcmp(face_expr(&fc, now + 1000), "puzzled") == 0, "told: %s", face_expr(&fc, now + 1000));
+    CHECK(face_talking(&fc, now + 300) && !face_talking(&fc, now + 2000), "talking for 10 characters");
+    CHECK(strcmp(face_expr(&fc, now + 5000), "sad") == 0, "after the told one: %s", face_expr(&fc, now + 5000));
+    /* a key: listening; the body: tired, dizzy; silence: drowsy, asleep */
+    face_typing(&fc, now + 5000);
+    CHECK(strcmp(face_expr(&fc, now + 5500), "listen") == 0, "typing: %s", face_expr(&fc, now + 5500));
+    face_set(&fc, "mood=0;bond=0;stage=1;body=2;expr=;say=0", now + 9000);
+    CHECK(strcmp(face_expr(&fc, now + 9000), "tired") == 0, "tired: %s", face_expr(&fc, now + 9000));
+    face_set(&fc, "mood=0;bond=0;stage=1;body=3;expr=;say=0", now + 9000);
+    CHECK(strcmp(face_expr(&fc, now + 9000), "dizzy") == 0, "dizzy: %s", face_expr(&fc, now + 9000));
+    face_set(&fc, "mood=0;bond=0;stage=1;body=0;expr=;say=0", now + 9000);
+    CHECK(strcmp(face_expr(&fc, now + 9000 + 100000), "drowsy") == 0, "100 s: %s", face_expr(&fc, now + 109000));
+    CHECK(strcmp(face_expr(&fc, now + 9000 + 200000), "sleep") == 0, "200 s: %s", face_expr(&fc, now + 209000));
+    /* out-of-range values are clamped, junk is ignored */
+    face_set(&fc, "mood=999;bond=-5;stage=9;body=7;expr=averyveryverylongname;nonsense;=;say=-3", now);
+    CHECK(fc.mood == 100 && fc.bond == 0 && fc.stage == 3 && fc.body == 3, "clamped %d %d %d %d", fc.mood, fc.bond, fc.stage, fc.body);
+    /* it draws: skin in the middle of the head, the label under it, nothing outside its box */
+    struct canvas cv;
+    canvas_init(&cv, FACE_W + 20, FACE_H + 20);
+    canvas_fill(&cv, 0, 0, cv.w, cv.h, 0x123456);
+    face_set(&fc, "mood=50;bond=40;stage=3;body=0;expr=happy;say=0", now);
+    face_look(&fc, 100, 0);
+    for (int i = 0; i < 10; i++) face_tick(&fc, now + i * 80);
+    face_draw(&fc, &cv, &f, 10, 10, now + 800);
+    CHECK(cv.px[(size_t)(10 + 100) * cv.w + 10 + FACE_W / 2] == 0xFFDFC4, "skin at the centre: %06x", cv.px[(size_t)110 * cv.w + 10 + FACE_W / 2]);
+    CHECK(strcmp(fc.label, "うれしい") == 0, "label %s", fc.label);
+    CHECK(fc.look_x == 4, "eyes toward the pointer: %d", fc.look_x);
+    int outside = 0;
+    for (int y = 0; y < cv.h; y++) for (int x = 0; x < cv.w; x++)
+        if ((x < 10 || y < 10 || x >= 10 + FACE_W || y >= 10 + FACE_H) && cv.px[(size_t)y * cv.w + x] != 0x123456) outside++;
+    CHECK(outside == 0, "%d pixels outside the box", outside);
+    /* the stage changes the face: a newborn has no hair over the forehead */
+    face_set(&fc, "mood=0;bond=0;stage=0;body=0;expr=;say=0", now);
+    face_draw(&fc, &cv, &f, 10, 10, now);
+    CHECK(cv.px[(size_t)(10 + 104 - 40) * cv.w + 10 + FACE_W / 2 - 20] == 0xFFDFC4, "newborn forehead is skin");
+    canvas_free(&cv);
+    font_free(&f);
+}
+
 int main(int argc, char **argv)
 {
     test_kana();
     test_term();
     test_paint(argc > 1 ? argv[1] : "font.hex");
+    test_face(argc > 1 ? argv[1] : "font.hex");
     test_font(argc > 1 ? argv[1] : "font.hex");
     test_dict(argc > 2 ? argv[2] : "dict.txt");
     if (fails) { fprintf(stderr, "%d check(s) failed\n", fails); return 1; }

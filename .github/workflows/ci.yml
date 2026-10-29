@@ -314,6 +314,25 @@ jobs:
           grep -q '^second page back\[1\]' "$state/windows.txt"           # link [1] of index.html is sub/page.html
           grep -q 'サブページ - file:.*/sub/page.html' "$state/windows.txt"
           python3 scripts/ppm2png.py "$state/shot.ppm" screenshot-browser.png
+      - name: Screen smoke test (AlterEgo's face follows what it feels, praise makes it happy, a question puzzled)
+        run: |
+          state=$(mktemp -d)
+          run_face() { ALTEREGO_HEADLESS=1024x768 ALTEREGO_SNAPSHOT="$state/face.ppm" ALTEREGO_DUMP="$state/dump.txt" \
+            ALTEREGO_SCRIPT="$1" ALTEREGO_SCRIPT_KANA=1 \
+            ALTEREGO_FONT=src/screen/font.hex ALTEREGO_DICT=src/screen/dict.txt \
+            ALTEREGO_AGENT="$PWD/src/agent/alterego" ALTEREGO_SHELL=/bin/sh ALTEREGO_WEB="$PWD/src/web/alterego-web" \
+            ALTEREGO_STATE="$state" ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml \
+            timeout 60 ./src/screen/alterego-screen; }
+          # the face window is open from the start; after 「えらいね！」 the agent tells it it is happy
+          run_face $'konnnichiha\neraine!\n'
+          cat "$state/dump.txt"
+          grep -q '^== AlterEgo の顔$' "$state/dump.txt"
+          grep -q '^(face stage=0 mood=[0-9]* bond=[0-9]* body=0 expr=happy label=うれしい)$' "$state/dump.txt"
+          python3 scripts/ppm2png.py "$state/face.ppm" screenshot-face.png
+          # a word it does not know: puzzled; the stage comes from the agent too
+          run_face $'ringotte nani?\n'
+          cat "$state/dump.txt"
+          grep -q '^(face stage=0 mood=[-0-9]* bond=[0-9]* body=0 expr=puzzled label=？)$' "$state/dump.txt"
       - name: Screen smoke test (the メニュー and the paint window)
         run: |
           state=$(mktemp -d)
@@ -406,6 +425,7 @@ jobs:
           path: |
             screenshot.png
             screenshot-browser.png
+            screenshot-face.png
             screenshot-paint.png
             screenshot-show.png
             screenshot-draw.png

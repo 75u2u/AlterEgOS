@@ -61,6 +61,10 @@ int brain_is_query(const char *line);
 
 /* Compose the reply to `input` (learn it first). */
 void brain_reply(struct brain *b, const struct persona *p, const char *input, char *out, size_t cap);
+/* What it felt while composing the latest reply (happy, sad, love, nod,
+ * puzzled, curious; "" when nothing special), for its face on the screen.
+ * Reading it clears it. */
+const char *brain_expression(struct brain *b);
 /* Growth, personality and names, in words, in the latest language. */
 void brain_status(const struct brain *b, const struct persona *p, char *out, size_t cap);
 /* Keep a note of something that happened (「〇〇の絵を見せてもらった」). */

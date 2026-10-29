@@ -19,6 +19,11 @@
  * What that needs beyond the utterance log (closeness, mood, questions
  * asked and answered, boots, when it last heard the user) is bond.txt.
  *
+ * On the desktop its face is a window (screen.c, face.c): after every line
+ * it says, it tells the screen how it feels (an OSC string at the end of
+ * the line: mood, closeness, stage, body, the expression and how long it
+ * spoke), and the screen animates the face from that.
+ *
  * Its own language model (llm.c) studies the conversation in the pauses:
  * every tick of the wait loop it trains for ALTEREGO_REVIEW_MS milliseconds
  * (500 by default, 0 turns it off) until there is nothing new to study, and
@@ -40,6 +45,7 @@
 #include "persona.h"
 #include "skills.h"
 #include "store.h"
+#include "utf8.h"
 
 #define LOG_FILE    "utterances.txt"
 #define SELF_FILE   "personality.txt"
@@ -67,7 +73,26 @@ static void kmsg_up(const struct persona *p, int turns)
     close(fd);
 }
 
-static void greet(const struct persona *p, const struct brain *b, const char *store)
+static int g_body_level;                     /* the latest body reading, for the face */
+
+/* The face's state for the screen, to end a spoken line with ("" without a screen). */
+static const char *face_osc(struct brain *b, const char *said, char *buf, size_t cap)
+{
+    if (!getenv("ALTEREGO_SCREEN")) return "";
+    snprintf(buf, cap, "\x1b]7700;face;mood=%d;bond=%d;stage=%d;body=%d;expr=%s;say=%zu\x1b\\",
+             brain_mood(b), brain_intimacy(b), brain_stage(b), g_body_level, brain_expression(b), utf8_count(said));
+    return buf;
+}
+
+/* AlterEgo says a line (its name, the words, its face). */
+static void say(struct brain *b, const struct persona *p, const char *text)
+{
+    char face[160];
+    printf("%s: %s%s\n", brain_own_name(b, p), text, face_osc(b, text, face, sizeof face));
+    fflush(stdout);
+}
+
+static void greet(struct persona *p, struct brain *b, const char *store)
 {
     const char *me = brain_own_name(b, p);
     const char *you = brain_user_name(b, p);
@@ -77,7 +102,8 @@ static void greet(const struct persona *p, const struct brain *b, const char *st
         else if (stage == 1) printf("\n%s: %s! ...hi.\n", me, you);
         else printf("\n%s: Good morning, %s. I'm %s. %d conversations so far.\n", me, you, me, brain_turns(b));
         if (!store) printf("%s: There is nowhere to write, so what I learn today is lost at the next boot.\n", me);
-        printf("%s: \"status\" tells how I am growing, \"what do you remember\" what I keep, \"what can you do\" what I can do for you. \"exit\" ends this talk.\n\n", me);
+        say(b, p, "\"status\" tells how I am growing, \"what do you remember\" what I keep, \"what can you do\" what I can do for you. \"exit\" ends this talk.");
+        printf("\n");
         fflush(stdout);
         return;
     }
@@ -94,7 +120,8 @@ static void greet(const struct persona *p, const struct brain *b, const char *st
     }
     if (!store)
         printf("%s: 書き込める場所が無いので、今日覚えたことは次に起きたら忘れてしまいます。\n", me);
-    printf("%s: 「ステータス」で育ち具合、「何を覚えてる？」で覚えていること、「できること」で私にできることを話します。「君の名前は〇〇」で名前がつきます。「exit」で終わります。\n\n", me);
+    say(b, p, "「ステータス」で育ち具合、「何を覚えてる？」で覚えていること、「できること」で私にできることを話します。「君の名前は〇〇」で名前がつきます。「exit」で終わります。");
+    printf("\n");
     fflush(stdout);
 }
 
@@ -143,7 +170,7 @@ static void welcome(struct brain *b, const struct persona *p)
 {
     char line[512];
     brain_welcome(b, p, line, sizeof line);
-    if (line[0]) { printf("%s: %s\n", brain_own_name(b, p), line); fflush(stdout); }
+    if (line[0]) say(b, p, line);
 }
 
 /* 「リセット」: forget everything, be newborn again */
@@ -239,11 +266,14 @@ int main(void)
             enum body_level before = body.level;
             body_sample(&body);
             brain_set_body(b, body.level);
+            g_body_level = body.level;
             time_t now = time(NULL);
             /* Silence: say something of its own, once, after idle_s seconds. */
             if (!idle_said && idle_s > 0 && now - quiet_since >= idle_s && brain_idle_line(b, &p, reply, sizeof reply)) {
                 idle_said = 1;
-                printf("\n%s: %s\n%s> ", brain_own_name(b, &p), reply, brain_user_name(b, &p));
+                printf("\n");
+                say(b, &p, reply);
+                printf("%s> ", brain_user_name(b, &p));
                 fflush(stdout);
                 if (store) save_self(b, &p);
             }
@@ -252,7 +282,9 @@ int main(void)
                 (body.level == BODY_FINE && before >= BODY_TIRED)) {
                 body_remark(&body, before, brain_lang(b) == BRAIN_EN, reply, sizeof reply);
                 if (reply[0]) {
-                    printf("\n%s: %s\n%s> ", brain_own_name(b, &p), reply, brain_user_name(b, &p));
+                    printf("\n");
+                    say(b, &p, reply);
+                    printf("%s> ", brain_user_name(b, &p));
                     fflush(stdout);
                     if (body.level >= BODY_TIRED) last_remark = now;
                 }
@@ -276,7 +308,7 @@ int main(void)
             if (!b || !sk) return 1;
             brain_set_body(b, body.level);
             load_bond(b, NULL);
-            printf("%s: %s\n", p.name, en ? "(The memories are erased. I am newborn again.)" : "（記憶を消しました。生まれたてに戻ります。）");
+            say(b, &p, en ? "(The memories are erased. I am newborn again.)" : "（記憶を消しました。生まれたてに戻ります。）");
             greet(&p, b, store);
             continue;
         }
@@ -284,15 +316,16 @@ int main(void)
         if (body_is_query(line)) {
             body_sample(&body);
             brain_set_body(b, body.level);
+            g_body_level = body.level;
             body_report(&body, brain_detect_lang(line, brain_lang(b)) == BRAIN_EN, reply, sizeof reply);
-            printf("%s: %s\n", brain_own_name(b, &p), reply);
+            say(b, &p, reply);
             continue;
         }
         /* Something to do to the OS (the time, a file, a command, an ability
          * it was taught) is done, not learned as a word. */
         if (skills_handle(sk, b, brain_detect_lang(line, brain_lang(b)), brain_own_name(b, &p), brain_user_name(b, &p), line, reply, sizeof reply)) {
             if (store) save_self(b, &p);                      /* it may have remembered something (a picture) */
-            printf("%s: %s\n", brain_own_name(b, &p), reply);
+            say(b, &p, reply);
             continue;
         }
         /* Asking about the mind itself ("ステータス", "what do you remember")
@@ -302,7 +335,7 @@ int main(void)
             if (store) { store_append(LOG_FILE, line); save_self(b, &p); }
         }
         brain_reply(b, &p, line, reply, sizeof reply);
-        printf("%s: %s\n", brain_own_name(b, &p), reply);
+        say(b, &p, reply);
     }
     free(line);
     if (store) save_self(b, &p);                      /* when it last heard the user */
@@ -310,9 +343,9 @@ int main(void)
 
     if (brain_turns(b) > 0) {
         brain_status(b, &p, reply, sizeof reply);
-        printf("%s: %s\n", brain_own_name(b, &p), reply);
+        say(b, &p, reply);
     }
-    printf("%s: %s\n", brain_own_name(b, &p), brain_lang(b) == BRAIN_EN ? "See you later." : "またね。");
+    say(b, &p, brain_lang(b) == BRAIN_EN ? "See you later." : "またね。");
     skills_free(sk);
     brain_free(b);
     return 0;

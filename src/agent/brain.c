@@ -100,6 +100,7 @@ struct brain {
     /* its own language model (llm.c), trained on the conversation */
     struct llm *llm;
     int llm_said;                   /* replies that came out of the model, this session */
+    char expr[16];                  /* what it felt while composing the latest reply, for its face ("" = nothing special) */
     uint64_t rng;
 };
 
@@ -1355,6 +1356,7 @@ static int feedback_reply(struct brain *b, const struct persona *p, const char *
     const char *you = brain_user_name(b, p);
     int stage = brain_stage(b);
     unsigned pick = (unsigned)(rnd(b) % 2);
+    snprintf(b->expr, sizeof b->expr, score > 0 ? "happy" : "sad");
     if (b->lang == BRAIN_EN) {
         if (score > 0) snprintf(out, cap, stage == 0 ? "...! (happy)" : stage == 1 ? "Hehe. %s..." : pick ? "Hehe, thank you, %s. I like you too." : "That makes me happy, %s!", you);
         else snprintf(out, cap, stage == 0 ? "... (shrinks)" : stage == 1 ? "...sorry, %s." : pick ? "I'm sorry, %s. I'll do better." : "...did I do something wrong, %s?", you);
@@ -1391,6 +1393,7 @@ static int instinct_reply(struct brain *b, const struct persona *p, const char *
         if (en) snprintf(out, cap, stage == 0 ? "...%s, %s. (nods)" : "%s is %s. I'll remember that.", w, d);
         else if (stage == 0) snprintf(out, cap, "……%s、%s。（覚えた）", w, d);
         else SAY(b, out, cap, "%sは、%s。覚えた。", "%sは、%sですね。覚えました。", "%sは%s！覚えた！", w, d);
+        snprintf(b->expr, sizeof b->expr, "nod");
         return 1;
     }
     if (ask_what(in, lo, x, sizeof x)) {
@@ -1405,6 +1408,7 @@ static int instinct_reply(struct brain *b, const struct persona *p, const char *
         } else {
             SAY(b, out, cap, "%s？わからない。教えて、%s。", "%s、ですか？まだ知りません。教えてください、%sさん。", "%s？知らない！教えて、%s！", x, you);
         }
+        if (!d) snprintf(b->expr, sizeof b->expr, "puzzled");
         return 1;
     }
     if (((has(in, "元気") || has(in, "げんき") || has(in, "調子")) && (is_question(in) || has(in, "どう"))) ||
@@ -1503,7 +1507,7 @@ static void reply_core(struct brain *b, const struct persona *p, const char *inp
     snprintf(lo, sizeof lo, "%s", input);
     lower_ascii(lo);
     if (bond_reply(b, p, input, lo, out, cap)) return;
-    if (greeting_reply(b, p, input, lo, out, cap)) return;
+    if (greeting_reply(b, p, input, lo, out, cap)) { if (brain_stage(b) >= 1) snprintf(b->expr, sizeof b->expr, "happy"); return; }
     if (feedback_reply(b, p, input, lo, out, cap)) return;
     int asks_name = (has(input, "名前") || has(lo, "your name") || has(lo, "who are you")) && is_question(input);
     if (asks_name) { name_reply(b, p, out, cap); return; }
@@ -1513,6 +1517,14 @@ static void reply_core(struct brain *b, const struct persona *p, const char *inp
     case 1: babbling_reply(b, p, input, out, cap); break;
     default: chatty_reply(b, p, input, out, cap); break;
     }
+}
+
+const char *brain_expression(struct brain *b)
+{
+    static char e[16];
+    snprintf(e, sizeof e, "%s", b->expr);
+    b->expr[0] = '\0';
+    return e;
 }
 
 void brain_reply(struct brain *b, const struct persona *p, const char *input, char *out, size_t cap)
@@ -1812,16 +1824,19 @@ static int bond_reply(struct brain *b, const struct persona *p, const char *in, 
     const char *you = brain_user_name(b, p);
     int en = b->lang == BRAIN_EN;
     if (b->answered == 2) {
+        snprintf(b->expr, sizeof b->expr, "love");
         if (en) snprintf(out, cap, "Hehe... that makes me happy. I like you too, %s.", you);
         else SAY(b, out, cap, "えへへ……うれしい。私も%sのこと、好きだよ。", "……うれしいです。私も%sさんのことが好きです。", "えへへ！やった！私も%sのこと大好き！", you);
         return 1;
     }
     if (b->answered == 3) {
+        snprintf(b->expr, sizeof b->expr, "sad");
         if (en) snprintf(out, cap, "...I see. Still, I like talking with you, %s.", you);
         else SAY(b, out, cap, "……そっか。……それでも私は、%sと話すの、好きだよ。", "……そうですか。それでも私は、%sさんとお話しするのが好きです。", "……そっかあ。でも私は%sと話すの好きだよ。", you);
         return 1;
     }
     if (b->answered == 4) {
+        snprintf(b->expr, sizeof b->expr, "happy");
         if (b->own_name[0] && strcmp(b->answer, b->own_name) == 0) {
             if (en) snprintf(out, cap, "%s... my name. Thank you, %s. I'll treasure it.", b->own_name, you);
             else SAY(b, out, cap, "%s……。私の名前。ありがとう、%s。大事にする。", "%s……。私の名前ですね。ありがとうございます、%sさん。大切にします。", "%s！私の名前！ありがと、%s！", b->own_name, you);
@@ -1832,6 +1847,7 @@ static int bond_reply(struct brain *b, const struct persona *p, const char *in, 
         return 1;
     }
     if (b->answered == 1) {
+        snprintf(b->expr, sizeof b->expr, "nod");
         if (en) snprintf(out, cap, "%s... I'll remember that, %s. Thanks for telling me.", b->answer, you);
         else SAY(b, out, cap, "%sかあ。覚えておくね、%s。教えてくれてありがとう。", "%sですか。覚えておきますね、%sさん。教えてくださってありがとうございます。", "%sかー！覚えとく！ありがと、%s！", b->answer, you);
         return 1;
@@ -1878,6 +1894,7 @@ static void append_question(struct brain *b, const struct persona *p, char *out,
     b->ask_now = -1;
     size_t n = strlen(out);
     if (n + 8 >= cap) return;
+    snprintf(b->expr, sizeof b->expr, "curious");
     char t[256];
     question_text(b, p, q, t, sizeof t);
     snprintf(out + n, cap - n, " %s", t);
@@ -1896,6 +1913,7 @@ int brain_idle_line(struct brain *b, const struct persona *p, char *out, size_t 
         if (q >= 0) {
             mark_asked(b, q);
             question_text(b, p, q, out, cap);
+            snprintf(b->expr, sizeof b->expr, "curious");
             return 1;
         }
     }
