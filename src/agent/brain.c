@@ -723,6 +723,9 @@ static const char *skip_subject(const char *s)
     return s;
 }
 
+static void remember(struct brain *b, const char *kind, const char *text);
+void brain_remember_note(struct brain *b, const char *text) { remember(b, "note", text); }
+
 static void remember(struct brain *b, const char *kind, const char *text)
 {
     char t[96];

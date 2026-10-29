@@ -9,7 +9,10 @@
  *
  *   - built in: the time, listing / reading / writing / making / removing
  *     files and directories, the processes, memory and disk, running a
- *     shell command ("実行して: ..."), rebooting and powering off,
+ *     shell command ("実行して: ..."), rebooting and powering off, opening
+ *     and closing the desktop's windows (apps.c: 「ペイントを開いて」,
+ *     「https://… を開いて」, 「〇〇を調べて」) and looking at a picture
+ *     drawn in paint (「絵を見て」; what it saw is remembered, `b`),
  *   - learned: "「X」と言ったら「Y」を実行して" / "when I say X, run Y" adds
  *     an ability X whose action Y is either another ability (composition)
  *     or a shell command. Kept in skills.txt in the store, so they survive
@@ -29,7 +32,7 @@ int            skills_count(const struct skills *s);
 /* True when `line` asks for an ability (built in or learned): then it is
  * acted on, and not learned as a word. `out` receives the reply, possibly
  * several lines. `me` / `you` are the names to speak with. */
-int skills_handle(struct skills *s, enum brain_lang lang, const char *me, const char *you,
+int skills_handle(struct skills *s, struct brain *b, enum brain_lang lang, const char *me, const char *you,
                   const char *line, char *out, size_t cap);
 
 #endif

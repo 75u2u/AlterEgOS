@@ -60,6 +60,8 @@ int brain_is_query(const char *line);
 void brain_reply(struct brain *b, const struct persona *p, const char *input, char *out, size_t cap);
 /* Growth, personality and names, in words, in the latest language. */
 void brain_status(const struct brain *b, const struct persona *p, char *out, size_t cap);
+/* Keep a note of something that happened (「〇〇の絵を見せてもらった」). */
+void brain_remember_note(struct brain *b, const char *text);
 /* What it remembers, one fact per line. */
 void brain_memories(const struct brain *b, const struct persona *p, char *out, size_t cap);
 

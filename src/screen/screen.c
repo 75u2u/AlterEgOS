@@ -123,6 +123,8 @@ static int g_paint_win = -1;                            /* a stroke in progress 
 static int g_menu_open;                                 /* the アプリ menu is shown */
 static int g_menu_x, g_menu_y, g_menu_w, g_menu_h;      /* where it is */
 static char g_save_dir[512];                            /* where paint saves pictures */
+static char g_web_url[4200];                            /* the page the browser is (re)started on, from the agent */
+static char *g_argvs[WIN_MAX][3];                       /* the programs behind the terminal windows */
 static struct button g_btn[8];
 static int g_nbtn;
 static int g_dirty = 1;
@@ -178,6 +180,7 @@ static char **child_env(void)
     env[n++] = "HOME=/root";
     env[n++] = "TERM=linux";
     env[n++] = "LANG=ja_JP.UTF-8";
+    env[n++] = "ALTEREGO_SCREEN=1";                                   /* the agent may ask for windows (OSC 7700) */
     const char *p = getenv("ALTEREGO_PERSONA");
     if (p) { snprintf(persona, sizeof persona, "ALTEREGO_PERSONA=%s", p); env[n++] = persona; }
     p = getenv("ALTEREGO_STATE");
@@ -246,6 +249,50 @@ static void win_write(struct win *w, const char *s, size_t n)
         s += k;
         n -= (size_t)k;
     }
+}
+
+static void hide_win(int i)
+{
+    g_win[i].visible = 0;
+    g_dirty = 1;
+    if (g_focus != i) return;
+    for (int k = WIN_MAX - 1; k >= 0; k--) if (g_win[g_order[k]].visible) { g_focus = g_order[k]; break; }
+}
+
+static int app_named(const char *name)
+{
+    static const char *const names[WIN_MAX] = { [W_CHAT] = "chat", [W_SHELL] = "shell", [W_WEB] = "web", [W_PAINT] = "paint" };
+    for (int i = 0; i < WIN_MAX; i++) if (strcmp(name, names[i]) == 0) return i;
+    return -1;
+}
+
+/* A request from a program in a window, sent as an OSC string
+ * "7700;open;<app>[;url]" or "7700;close;<app>" (the agent does this for
+ * 「ペイントを開いて」). Opening the browser on a URL restarts it there. */
+static void handle_osc(const char *osc)
+{
+    if (strncmp(osc, "7700;", 5) != 0) return;
+    char cmd[16], app[16];
+    const char *p = osc + 5;
+    size_t n = strcspn(p, ";");
+    snprintf(cmd, sizeof cmd, "%.*s", (int)n, p);
+    p += n + (p[n] == ';');
+    n = strcspn(p, ";");
+    snprintf(app, sizeof app, "%.*s", (int)n, p);
+    p += n + (p[n] == ';');
+    int i = app_named(app);
+    if (i < 0) return;
+    if (strcmp(cmd, "close") == 0) { hide_win(i); return; }
+    if (strcmp(cmd, "open") != 0) return;
+    if (i == W_WEB && *p) {
+        snprintf(g_web_url, sizeof g_web_url, "%s", p);
+        g_argvs[W_WEB][1] = g_web_url;
+        g_argvs[W_WEB][2] = NULL;
+        struct win *w = &g_win[W_WEB];
+        if (w->pid > 0) kill(w->pid, SIGTERM);              /* reap() restarts it on the new page */
+        else if (w->fd < 0) w->respawn_at = time(NULL);
+    }
+    raise_win(i);
 }
 
 /* ---- drawing */
@@ -329,8 +376,18 @@ static void draw_win(int i)
     /* close box */
     canvas_fill(&g_cv, w->x + W - TITLE_H + 2, w->y + 3, TITLE_H - 6, TITLE_H - 6, C_BTN);
     font_draw(&g_font, &g_cv, w->x + W - TITLE_H + 5, w->y + 2, 'x', C_BARTEXT, C_BTN);
-    if (w->fd < 0) {
-        font_text(&g_font, &g_cv, w->x + 8, w->y + 2 + font_text_width(&g_font, w->title) + 16, "(停止中)", C_BARTEXT, focused ? C_TITLE : C_TITLE_U);
+    if (w->kind == WK_TERM && w->fd < 0) {
+        font_text(&g_font, &g_cv, w->x + 8 + font_text_width(&g_font, w->title) + 16, w->y + 2, "(停止中)", C_BARTEXT, focused ? C_TITLE : C_TITLE_U);
+    } else if (w->kind == WK_PAINT && w->paint.msg[0]) {                  /* "保存した: ..." next to the title */
+        int mx = w->x + 8 + font_text_width(&g_font, w->title) + 16, room = W - TITLE_H - 4 - (mx - w->x);
+        char shown[128];
+        snprintf(shown, sizeof shown, "%s", w->paint.msg);
+        while (shown[0] && font_text_width(&g_font, shown) > room) {        /* cut whole UTF-8 characters off the end */
+            size_t n = strlen(shown) - 1;
+            while (n > 0 && ((unsigned char)shown[n] & 0xC0) == 0x80) n--;
+            shown[n] = '\0';
+        }
+        font_text(&g_font, &g_cv, mx, w->y + 2, shown, C_BARTEXT, focused ? C_TITLE : C_TITLE_U);
     }
     int ox = w->x + 1 + PAD, oy = w->y + TITLE_H + PAD;
     if (w->kind == WK_PAINT) { paint_draw(&w->paint, &g_cv, &g_font, ox, oy); return; }
@@ -459,15 +516,20 @@ static void on_click(int down)
     if (i < 0) return;
     struct win *w = &g_win[i];
     if (g_my < w->y + TITLE_H) {
-        if (g_mx >= w->x + win_w(w) - TITLE_H) { w->visible = 0; g_dirty = 1; 
-            for (int k = WIN_MAX - 1; k >= 0; k--) if (g_win[g_order[k]].visible) { g_focus = g_order[k]; break; }
-            return; }
+        if (g_mx >= w->x + win_w(w) - TITLE_H) { hide_win(i); return; }
         g_drag_win = i;
         g_drag_dx = g_mx - w->x;
         g_drag_dy = g_my - w->y;
     } else if (w->kind == WK_PAINT) {
-        paint_press(&w->paint, &g_font, g_mx - (w->x + 1 + PAD), g_my - (w->y + TITLE_H + PAD), g_save_dir);
+        int want = paint_press(&w->paint, &g_font, g_mx - (w->x + 1 + PAD), g_my - (w->y + TITLE_H + PAD), g_save_dir);
         if (w->paint.drawing) g_paint_win = i;
+        if (want == PAINT_SHOW) {                         /* 「見せる」: tell AlterEgo to look at the saved picture */
+            char ask[600];
+            int n = snprintf(ask, sizeof ask, "絵を見て: %s\r", w->paint.last);
+            win_write(&g_win[W_CHAT], ask, (size_t)n);
+            raise_win(W_CHAT);
+            return;
+        }
     }
     raise_win(i);
 }
@@ -570,7 +632,7 @@ static void dump_windows(const char *path)
     FILE *f = fopen(path, "w");
     if (!f) return;
     for (int i = 0; i < WIN_MAX; i++) {
-        fprintf(f, "== %s\n", g_win[i].title);
+        fprintf(f, "== %s%s\n", g_win[i].title, g_win[i].visible ? "" : " [hidden]");
         if (g_win[i].kind == WK_PAINT) { fprintf(f, "(paint %dx%d, %d strokes)\n", g_win[i].paint.w, g_win[i].paint.h, g_win[i].paint.strokes); continue; }
         char row[1024];
         for (int y = 0; y < g_win[i].rows; y++) { term_row(&g_win[i].term, y, row, sizeof row); fprintf(f, "%s\n", row); }
@@ -589,9 +651,11 @@ int main(void)
 
     /* Headless (tests, screenshots): ALTEREGO_HEADLESS=WxH draws into memory,
      * ALTEREGO_SNAPSHOT=file.ppm keeps the last frame, ALTEREGO_SCRIPT types
-     * keys into the focused window (\n is Enter; ALTEREGO_SCRIPT_WIN=shell|web
-     * focuses that window first), ALTEREGO_DUMP=file gets every window's text
-     * at the end, and the program then exits. */
+     * keys into the focused window (\n is Enter; ALTEREGO_SCRIPT_WIN=shell|web|paint
+     * focuses that window first; ALTEREGO_SCRIPT_MOUSE="x,y,d;x,y,m;x,y,u;…"
+     * moves the pointer to x,y and presses (d), drags (m) or releases (u)
+     * the left button there, before the keys), ALTEREGO_DUMP=file gets every
+     * window's text at the end, and the program then exits. */
     const char *headless = getenv("ALTEREGO_HEADLESS");
     g_snapshot = getenv("ALTEREGO_SNAPSHOT");
     g_script = getenv("ALTEREGO_SCRIPT");
@@ -643,7 +707,7 @@ int main(void)
     /* The programs behind the terminal windows, from the app table (an
      * ALTEREGO_* variable swaps one for a host build in the tests). */
     static char paths[WIN_MAX][256];
-    static char *argvs[WIN_MAX][2];
+    char *(*argvs)[3] = g_argvs;
     const char *p;
     for (int i = 0; i < WIN_MAX; i++) {
         if (g_apps[i].kind != WK_TERM) continue;
@@ -687,13 +751,25 @@ int main(void)
     time_t last_scan = time(NULL), last_minute = time(NULL) / 60;
     long script_next = now_ms() + 1500;
     size_t script_pos = 0;
+    const char *mouse_script = g_script ? getenv("ALTEREGO_SCRIPT_MOUSE") : NULL;
     if (g_script && getenv("ALTEREGO_SCRIPT_KANA")) g_kana_mode = 1;
     if (g_script && (p = getenv("ALTEREGO_SCRIPT_WIN")))
         raise_win(strcmp(p, "web") == 0 ? W_WEB : strcmp(p, "shell") == 0 ? W_SHELL : strcmp(p, "paint") == 0 ? W_PAINT : W_CHAT);
     if (g_script && getenv("ALTEREGO_SCRIPT_MENU")) g_menu_open = 1;      /* show the menu in the screenshot */
     while (!g_stop) {
         if (g_script && now_ms() >= script_next) {
-            if (g_script[script_pos]) {
+            if (mouse_script && *mouse_script) {
+                int x = 0, y = 0;
+                char what = 'm';
+                if (sscanf(mouse_script, "%d,%d,%c", &x, &y, &what) >= 2) {
+                    struct input_ev e = { .type = IN_MOUSE_ABS, .ax = x, .ay = y, .ax_max = g_cv.w - 1, .ay_max = g_cv.h - 1 };
+                    on_input(&e);
+                    if (what == 'd' || what == 'u') { struct input_ev b = { .type = IN_BUTTON, .button = 0, .down = what == 'd' }; on_input(&b); }
+                }
+                mouse_script += strcspn(mouse_script, ";");
+                if (*mouse_script == ';') mouse_script++;
+                script_next = now_ms() + 30;
+            } else if (g_script[script_pos]) {
                 struct input_ev e = { .type = IN_TEXT };
                 char c = g_script[script_pos++];
                 e.text[0] = c == '\n' ? '\r' : c;
@@ -721,6 +797,7 @@ int main(void)
             char buf[4096];
             ssize_t k = read(g_win[i].fd, buf, sizeof buf);
             if (k > 0) { term_feed(&g_win[i].term, buf, (size_t)k); g_dirty = 1; }
+            if (g_win[i].term.osc_ready) { g_win[i].term.osc_ready = 0; handle_osc(g_win[i].term.osc); }
         }
         for (int d = g_in.n - 1; d >= 0; d--) {
             if (first_in + d >= n || !(pfd[first_in + d].revents & (POLLIN | POLLHUP | POLLERR))) continue;

@@ -21,7 +21,7 @@ const uint32_t paint_palette[PAINT_COLORS] = {
     0x00ACC1, 0x1E88E5, 0x8E24AA, 0xF06292, 0x8D6E63, 0xFFFFFF };
 
 /* Toolbar items, laid out left to right. */
-enum { IT_COLOR = 0, IT_SIZE = PAINT_COLORS, IT_ERASER = IT_SIZE + 3, IT_CLEAR, IT_SAVE, IT_MAX };
+enum { IT_COLOR = 0, IT_SIZE = PAINT_COLORS, IT_ERASER = IT_SIZE + 3, IT_CLEAR, IT_SAVE, IT_SHOW, IT_MAX };
 struct item { int x, w; };
 
 static void layout(const struct font *f, struct item it[IT_MAX])
@@ -34,7 +34,8 @@ static void layout(const struct font *f, struct item it[IT_MAX])
     x += 8;
     it[IT_ERASER].x = x; it[IT_ERASER].w = font_text_width(f, "消しゴム") + 12; x += it[IT_ERASER].w + 6;
     it[IT_CLEAR].x = x; it[IT_CLEAR].w = font_text_width(f, "全部消す") + 12; x += it[IT_CLEAR].w + 6;
-    it[IT_SAVE].x = x; it[IT_SAVE].w = font_text_width(f, "保存") + 12;
+    it[IT_SAVE].x = x; it[IT_SAVE].w = font_text_width(f, "保存") + 12; x += it[IT_SAVE].w + 6;
+    it[IT_SHOW].x = x; it[IT_SHOW].w = font_text_width(f, "見せる") + 12;
 }
 
 int paint_init(struct paint *p, int w, int h)
@@ -101,29 +102,36 @@ static void line(struct paint *p, int x0, int y0, int x1, int y1)
     }
 }
 
-void paint_press(struct paint *p, const struct font *f, int x, int y, const char *save_dir)
+int paint_press(struct paint *p, const struct font *f, int x, int y, const char *save_dir)
 {
     if (y < PAINT_TB_H) {
         struct item it[IT_MAX];
         layout(f, it);
         for (int i = 0; i < IT_MAX; i++) {
             if (x < it[i].x || x >= it[i].x + it[i].w) continue;
+            if (i == IT_SHOW) {
+                if (p->strokes == 0) { snprintf(p->msg, sizeof p->msg, "まだ何も描いていない"); return PAINT_NONE; }
+                if (paint_save(p, save_dir) != 0) return PAINT_NONE;
+                snprintf(p->msg, sizeof p->msg, "AlterEgo に見せた");
+                return PAINT_SHOW;
+            }
             if (i < IT_SIZE) { p->color = paint_palette[i]; p->tool = PT_PEN; snprintf(p->msg, sizeof p->msg, "色を選んだ"); }
             else if (i < IT_ERASER) { p->size = i == IT_SIZE ? 1 : i == IT_SIZE + 1 ? 3 : 6; snprintf(p->msg, sizeof p->msg, "太さ: %s", i == IT_SIZE ? "細" : i == IT_SIZE + 1 ? "中" : "太"); }
             else if (i == IT_ERASER) { p->tool = p->tool == PT_ERASER ? PT_PEN : PT_ERASER; snprintf(p->msg, sizeof p->msg, p->tool == PT_ERASER ? "消しゴム" : "ペン"); }
             else if (i == IT_CLEAR) paint_clear(p);
             else if (i == IT_SAVE) paint_save(p, save_dir);
-            return;
+            return PAINT_NONE;
         }
-        return;
+        return PAINT_NONE;
     }
     y -= PAINT_TB_H;
-    if (x < 0 || y < 0 || x >= p->w || y >= p->h) return;
+    if (x < 0 || y < 0 || x >= p->w || y >= p->h) return PAINT_NONE;
     p->drawing = 1;
     p->lx = x;
     p->ly = y;
     dot(p, x, y);
     p->strokes++;
+    return PAINT_NONE;
 }
 
 void paint_move(struct paint *p, int x, int y)
@@ -158,7 +166,7 @@ int paint_save(struct paint *p, const char *dir)
         fputc((c >> 16) & 0xFF, f); fputc((c >> 8) & 0xFF, f); fputc(c & 0xFF, f);
     }
     int rc = fclose(f) == 0 ? 0 : -1;
-    if (rc == 0) snprintf(p->msg, sizeof p->msg, "保存した: %.100s", path);
+    if (rc == 0) { snprintf(p->last, sizeof p->last, "%s", path); snprintf(p->msg, sizeof p->msg, "保存した: %.100s", path); }
     else snprintf(p->msg, sizeof p->msg, "保存できない: %s", strerror(errno));
     return rc;
 }
@@ -174,23 +182,12 @@ void paint_draw(const struct paint *p, struct canvas *c, const struct font *f, i
         canvas_frame(c, ox + it[i].x, oy + 5, it[i].w, PAINT_TB_H - 10, on ? C_TBTEXT : C_FRAME);
         if (on) canvas_frame(c, ox + it[i].x + 1, oy + 6, it[i].w - 2, PAINT_TB_H - 12, C_TBTEXT);
     }
-    static const char *const labels[] = { "細", "中", "太", "消しゴム", "全部消す", "保存" };
+    static const char *const labels[] = { "細", "中", "太", "消しゴム", "全部消す", "保存", "見せる" };
     static const int sizes[3] = { 1, 3, 6 };
     for (int i = IT_SIZE; i < IT_MAX; i++) {
         int on = (i < IT_ERASER && p->size == sizes[i - IT_SIZE]) || (i == IT_ERASER && p->tool == PT_ERASER);
         canvas_fill(c, ox + it[i].x, oy + 4, it[i].w, PAINT_TB_H - 8, on ? C_TBON : C_TBBTN);
         font_text(f, c, ox + it[i].x + 5, oy + 6, labels[i - IT_SIZE], C_TBTEXT, on ? C_TBON : C_TBBTN);
-    }
-    int mx = it[IT_SAVE].x + it[IT_SAVE].w + 10;
-    if (mx < p->w - 8) {
-        char shown[128];
-        snprintf(shown, sizeof shown, "%s", p->msg);
-        while (shown[0] && font_text_width(f, shown) > p->w - mx - 4) {       /* cut whole UTF-8 characters off the end */
-            size_t n = strlen(shown) - 1;
-            while (n > 0 && ((unsigned char)shown[n] & 0xC0) == 0x80) n--;
-            shown[n] = '\0';
-        }
-        font_text(f, c, ox + mx, oy + 6, shown, C_TBTEXT, C_TB);
     }
     for (int y = 0; y < p->h; y++) {
         int cy = oy + PAINT_TB_H + y;

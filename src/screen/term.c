@@ -202,12 +202,20 @@ static void control(struct term *t, uint32_t cp)
     t->dirty = 1;
 }
 
+static void osc_end(struct term *t)
+{
+    if (t->osc_len < 0) return;
+    t->osc[t->osc_len] = '\0';
+    t->osc_ready = 1;
+}
+
 static void byte(struct term *t, unsigned char b)
 {
     switch (t->state) {
     case 1:                                       /* after ESC */
         if (b == '[') { t->state = 2; t->csi_len = 0; t->csi[0] = '\0'; }
-        else if (b == ']' || b == 'P' || b == '^' || b == '_') t->state = 3;
+        else if (b == ']') { t->state = 3; t->osc_len = 0; }
+        else if (b == 'P' || b == '^' || b == '_') { t->state = 3; t->osc_len = -1; }
         else if (b == '(' || b == ')' || b == '#') t->state = 4;
         else if (b == '7') { t->saved_cx = t->cx; t->saved_cy = t->cy; t->state = 0; }
         else if (b == '8') { t->cx = t->saved_cx; t->cy = t->saved_cy; t->state = 0; }
@@ -220,12 +228,16 @@ static void byte(struct term *t, unsigned char b)
         if (b >= 0x40 && b <= 0x7E) { t->csi[t->csi_len] = '\0'; csi_final(t, (char)b); t->state = 0; }
         else if (t->csi_len < (int)sizeof t->csi - 1) t->csi[t->csi_len++] = (char)b;
         return;
-    case 3:                                       /* OSC etc.: skip to BEL or ST */
-        if (b == 0x07) t->state = 0;
+    case 3:                                       /* OSC (kept), DCS/PM/APC (skipped): to BEL or ST */
+        if (b == 0x07) { osc_end(t); t->state = 0; }
         else if (b == 0x1B) t->state = 5;
+        else if (t->osc_len >= 0 && t->osc_len < (int)sizeof t->osc - 1) t->osc[t->osc_len++] = (char)b;
         return;
     case 4: t->state = 0; return;                 /* charset designation: one byte */
-    case 5: t->state = (b == '\\') ? 0 : 3; return;
+    case 5:
+        if (b == '\\') { osc_end(t); t->state = 0; }
+        else t->state = 3;
+        return;
     default: break;
     }
     if (b < 0x20 || b == 0x7F) { t->utf_len = 0; control(t, b); return; }

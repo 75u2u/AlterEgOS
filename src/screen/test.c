@@ -97,6 +97,17 @@ static void test_term(void)
     CHECK(t.cells[4].attr == ATTR_BOLD && t.cells[4].fg == 0, "256-color skipped, bold kept %d %d", t.cells[4].attr, t.cells[4].fg);
     term_row(&t, 0, row, sizeof row);
     CHECK(strcmp(row, "ABCDE") == 0, "sgr text '%s'", row);
+    /* OSC strings are kept for the desktop (BEL or ESC \\ ends them), DCS/APC are not */
+    feed(&t, "\x1b[2JX\x1b]7700;open;paint\x07Y");
+    CHECK(t.osc_ready && strcmp(t.osc, "7700;open;paint") == 0, "osc bel '%s'", t.osc);
+    t.osc_ready = 0;
+    feed(&t, "\x1b]7700;open;web;http://a/b\x1b\\Z");
+    CHECK(t.osc_ready && strcmp(t.osc, "7700;open;web;http://a/b") == 0, "osc st '%s'", t.osc);
+    t.osc_ready = 0;
+    feed(&t, "\x1bPsomething\x1b\\");
+    CHECK(!t.osc_ready, "dcs not reported");
+    term_row(&t, 0, row, sizeof row);
+    CHECK(strcmp(row, "XYZ") == 0, "osc hidden '%s'", row);
     term_free(&t);
 }
 
@@ -245,13 +256,23 @@ static void test_paint(const char *fontpath)
     char dir[] = "/tmp/alterego-paint-XXXXXX";
     CHECK(mkdtemp(dir) != NULL, "mkdtemp");
     CHECK(paint_save(&p, dir) == 0 && strstr(p.msg, "保存した: ") == p.msg, "save '%s'", p.msg);
-    char path[256];
-    snprintf(path, sizeof path, "%s", p.msg + strlen("保存した: "));
+    const char *path = p.last;
+    CHECK(strncmp(path, dir, strlen(dir)) == 0, "last path '%s'", path);
     FILE *pf = fopen(path, "rb");
     CHECK(pf != NULL, "saved file exists");
     if (pf) { char hdr[16] = ""; if (fgets(hdr, sizeof hdr, pf)) CHECK(strcmp(hdr, "P6\n") == 0, "ppm header '%s'", hdr); fclose(pf); remove(path); }
+    /* 「見せる」: saves and asks the desktop to show the picture; nothing to show on an empty sheet */
+    int sx = 0, want = PAINT_NONE;
+    for (int x = ex + 2; x < 600 && want != PAINT_SHOW; x += 2) {       /* 全部消す lies on the way: draw again after it */
+        if (p.strokes == 0) { paint_press(&p, &f, 100, PAINT_TB_H + 50, NULL); paint_release(&p); }
+        want = paint_press(&p, &f, x, 10, dir); sx = x;
+    }
+    CHECK(want == PAINT_SHOW && strncmp(p.last, dir, strlen(dir)) == 0, "show found at x=%d, saved '%s'", sx, p.last);
+    CHECK(strcmp(p.msg, "AlterEgo に見せた") == 0, "show msg '%s'", p.msg);
+    remove(p.last);
     rmdir(dir);
     paint_clear(&p);
+    CHECK(paint_press(&p, &f, sx, 10, dir) == PAINT_NONE && strstr(p.msg, "まだ何も") == p.msg, "nothing to show '%s'", p.msg);
     CHECK(paint_pixel(&p, 100, 50) == 0xFFFFFF && p.strokes == 0, "cleared");
     /* draws without touching pixels outside its box */
     struct canvas c;
