@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include "brain.h"
+#include "llm.h"
 #include "persona.h"
 #include "utf8.h"
 
@@ -96,6 +97,9 @@ struct brain {
     int idle_count;                 /* times it spoke up into silence */
     int last_q;                     /* nutt when it last asked something */
     int replaying;                  /* rebuilding from the log: no questions, bond.txt has the answers */
+    /* its own language model (llm.c), trained on the conversation */
+    struct llm *llm;
+    int llm_said;                   /* replies that came out of the model, this session */
     uint64_t rng;
 };
 
@@ -427,6 +431,20 @@ static int ending_of(const char *s, char *out, size_t cap)
 /* ---- public: learning */
 
 static void absorb(struct brain *b, const char *utterance);
+static int is_teaching(const char *u);
+
+/* The language model learns the conversation as pairs: what was said, and
+ * what the user said next. Lines that teach (names, "remember") are not
+ * things to say back. While talking, a new line is studied right away (two
+ * steps, mostly on it); the rest of the studying happens in the pauses
+ * (brain_review). */
+static void llm_learn(struct brain *b, const char *utterance)
+{
+    if (is_teaching(utterance)) return;
+    const char *prev = b->nutt >= 2 ? b->utt[b->nutt - 2] : "";
+    llm_add_example(b->llm, prev, utterance);
+    if (!b->replaying) { llm_step(b->llm, 0.8); llm_step(b->llm, 0.5); }
+}
 
 struct brain *brain_new(const int stage_turns[3])
 {
@@ -437,6 +455,8 @@ struct brain *brain_new(const int stage_turns[3])
     if (!b->rng) b->rng = 1;
     b->pending_q = b->ask_now = -1;
     b->sessions = 1;
+    b->llm = llm_new(b->rng);
+    if (!b->llm) { free(b); return NULL; }
     return b;
 }
 
@@ -451,6 +471,7 @@ void brain_free(struct brain *b)
     }
     for (int i = 0; i < b->nutt; i++) free(b->utt[i]);
     free(b->utt);
+    llm_free(b->llm);
     free(b);
 }
 
@@ -489,6 +510,70 @@ void brain_learn(struct brain *b, const char *utterance)
     char e[16];
     if (b->lang == BRAIN_JA && ending_of(utterance, e, sizeof e)) word_count(b->endings, &b->nendings, 64, e);
     absorb(b, utterance);
+    llm_learn(b, utterance);
+}
+
+/* ---- the language model, seen from outside */
+
+int brain_review(struct brain *b, int budget_ms)
+{
+    if (!llm_wants_review(b->llm)) return 0;
+    return llm_train(b->llm, budget_ms);
+}
+
+int brain_wants_review(const struct brain *b) { return llm_wants_review(b->llm); }
+
+int brain_model_load(struct brain *b, const unsigned char *data, size_t len)
+{
+    return llm_load(b->llm, data, len);
+}
+
+unsigned char *brain_model_save(struct brain *b, size_t *len, int force)
+{
+    if (!force && llm_unsaved(b->llm) < 300) return NULL;
+    if (llm_steps(b->llm) == 0) return NULL;
+    return llm_save(b->llm, len);
+}
+
+int brain_speaks_itself(const struct brain *b) { return llm_ready(b->llm); }
+
+/* How the model should speak now: its personality sets the temperature
+ * (curiosity and cheer loosen it, politeness tightens it), its stage and
+ * talkativeness the length. */
+static double llm_temperature(const struct brain *b)
+{
+    double t = 0.75;
+    if (b->traits[T_CURIOUS] > 10) t += 0.2;
+    if (b->traits[T_CHEER] > 25) t += 0.1;
+    if (b->traits[T_POLITE] > 15) t -= 0.1;
+    if (b->mood > 30) t += 0.05;
+    return t < 0.5 ? 0.5 : t > 1.1 ? 1.1 : t;
+}
+
+static int llm_max_tokens(const struct brain *b)
+{
+    int n = brain_stage(b) <= 1 ? 10 : brain_stage(b) == 2 ? 24 : 40;
+    if (b->traits[T_TALK] > 15) n = n * 3 / 2;
+    if (b->traits[T_TALK] < -15) n = n * 2 / 3;
+    return n;
+}
+
+/* A reply from the model: what the user would say next, in the user's
+ * words; 0 when it is not ready or what came out is not worth saying. */
+static int llm_reply(struct brain *b, const char *in, char *out, size_t cap, int max_cps)
+{
+    if (!llm_ready(b->llm)) return 0;
+    int max_tokens = llm_max_tokens(b);
+    if (max_tokens > max_cps) max_tokens = max_cps;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        if (!llm_generate(b->llm, in, llm_temperature(b), max_tokens, out, cap)) continue;
+        if (utf8_count(out) < 2 || strcasecmp(out, in) == 0) continue;
+        if (brain_detect_lang(out, b->lang) != b->lang || brain_is_query(out) || is_teaching(out)) continue;
+        b->llm_said++;
+        return 1;
+    }
+    out[0] = '\0';
+    return 0;
 }
 
 void brain_load_log(struct brain *b, const char *text)
@@ -1091,9 +1176,11 @@ static int is_teaching(const char *u)
            has(lo, "call me") || has(lo, "call you") || has(lo, "remember");
 }
 
-/* Something the user said next last time, or text generated from their words. */
+/* Its own words (the language model, once it has learned enough), else
+ * something the user said next last time, or text generated from their words. */
 static int learned_reply(struct brain *b, const char *in, char *out, size_t cap, int max_cps)
 {
+    if (llm_reply(b, in, out, cap, max_cps)) return 1;
     int i = most_similar(b, in);
     if (i >= 0 && i + 1 < b->nutt - 1 && strcmp(b->utt[i + 1], in) != 0 &&
         brain_detect_lang(b->utt[i + 1], b->lang) == b->lang && !brain_is_query(b->utt[i + 1]) && !is_teaching(b->utt[i + 1])) {
@@ -1473,18 +1560,22 @@ void brain_status(const struct brain *b, const struct persona *p, char *out, siz
         snprintf(traits + n, sizeof traits - n, "%s%s", n ? (b->lang == BRAIN_EN ? ", " : "、") : "", word);
     }
     if (b->lang == BRAIN_EN) {
-        snprintf(out, cap, "Name: %s. Your name: %s. Growth: %s (%d conversations%s%d%s). Personality: %s. Closeness: %s (%d). Mood: %s. Condition: %s (ask \"how is your body\"). Words learned: %d, memories: %d (ask \"what do you remember\").",
+        snprintf(out, cap, "Name: %s. Your name: %s. Growth: %s (%d conversations%s%d%s). Personality: %s. Closeness: %s (%d). Mood: %s. Condition: %s (ask \"how is your body\"). Words learned: %d, memories: %d (ask \"what do you remember\"). Mind: my own small language model (%d layers, %ld weights), %d characters known, %ld reviews, loss %.2f, %s.",
                  b->own_name[0] ? b->own_name : "none yet (say \"your name is ...\")",
                  b->user_name[0] ? b->user_name : "not told yet (say \"my name is ...\")",
                  stage_name(b), b->nutt, stage < 3 ? ", " : "", next, stage < 3 ? " more to the next stage" : "",
-                 traits[0] ? traits : "nothing has sprouted yet", brain_intimacy_word(b), b->intimacy, mood_word(b), body_word(b), b->nwords, b->nfacts);
+                 traits[0] ? traits : "nothing has sprouted yet", brain_intimacy_word(b), b->intimacy, mood_word(b), body_word(b), b->nwords, b->nfacts,
+                 LLM_LAYERS, llm_params(), llm_vocab(b->llm), llm_steps(b->llm), llm_loss(b->llm),
+                 llm_ready(b->llm) ? "speaking in my own words" : "still listening");
         return;
     }
-    snprintf(out, cap, "名前: %s。%sの名前: %s。成長: %s(%d 回話した%s%d%s)。性格: %s。親密度: %s(%d)。気分: %s。体調: %s(「体調は？」で詳しく)。覚えた言葉 %d 語、覚えていること %d 件(「何を覚えてる？」で聞けます)。",
+    snprintf(out, cap, "名前: %s。%sの名前: %s。成長: %s(%d 回話した%s%d%s)。性格: %s。親密度: %s(%d)。気分: %s。体調: %s(「体調は？」で詳しく)。覚えた言葉 %d 語、覚えていること %d 件(「何を覚えてる？」で聞けます)。頭: 自前の小さな言語モデル(%d 層・重み %ld 個)、知っている文字 %d、復習 %ld 回、迷い %.2f、%s。",
              b->own_name[0] ? b->own_name : "まだない(「君の名前は〇〇」でつけてください)",
              you, b->user_name[0] ? b->user_name : "まだ聞いていない(「私の名前は〇〇」で教えてください)",
              stage_name(b), b->nutt, stage < 3 ? "、あと " : "", next, stage < 3 ? " 回で次の段階" : "",
-             traits[0] ? traits : "まだ芽生えていない", brain_intimacy_word(b), b->intimacy, mood_word(b), body_word(b), b->nwords, b->nfacts);
+             traits[0] ? traits : "まだ芽生えていない", brain_intimacy_word(b), b->intimacy, mood_word(b), body_word(b), b->nwords, b->nfacts,
+             LLM_LAYERS, llm_params(), llm_vocab(b->llm), llm_steps(b->llm), llm_loss(b->llm),
+             llm_ready(b->llm) ? "もう自分の言葉で話せる" : "まだ聞いて覚えている途中");
 }
 
 void brain_memories(const struct brain *b, const struct persona *p, char *out, size_t cap)
@@ -1811,6 +1902,14 @@ int brain_idle_line(struct brain *b, const struct persona *p, char *out, size_t 
     const struct fact *f = NULL;
     int nl = count_kind(b, "like");
     if (nl) { int pick = k % nl; for (int i = 0; i < b->nfacts; i++) if (strcmp(b->facts[i].kind, "like") == 0 && pick-- == 0) f = &b->facts[i]; }
+    char thought[256];
+    if (k % 4 == 3 && llm_ready(b->llm) && llm_generate(b->llm, "", llm_temperature(b), 24, thought, sizeof thought) &&
+        utf8_count(thought) >= 2 && !brain_is_query(thought) && !is_teaching(thought)) {
+        if (en) snprintf(out, cap, "...\"%s\" came to mind just now, %s.", thought, you);
+        else SAY(b, out, cap, "……ふと「%s」って言葉が浮かんだ、%s。", "……ふと「%s」という言葉が浮かびました、%sさん。", "……いま「%s」って浮かんだ、%s！", thought, you);
+        b->llm_said++;
+        return 1;
+    }
     switch (k % 3) {
     case 0:
         if (en) snprintf(out, cap, "%s? Are you still there?", you);

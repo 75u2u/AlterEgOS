@@ -8,8 +8,11 @@
  * comes out of the conversations with the user. No external model, no
  * network. What it keeps:
  *
- *   - language: a character n-gram model (orders 1..3) and, for English, a
- *     word n-gram (orders 1..2) of what the user said, plus the log of
+ *   - language: its own small Transformer language model (llm.c), trained
+ *     here on the conversation, which from a few hundred study steps on
+ *     answers in the user's words; until then (and when it has nothing to
+ *     say) a character n-gram model (orders 1..3) and, for English, a word
+ *     n-gram (orders 1..2) of what the user said, plus the log of
  *     utterances, searched for the past line most like the current one;
  *     the user is the only speaker it hears, so the user's words are the
  *     words it learns to speak with,
@@ -82,5 +85,17 @@ void brain_welcome(struct brain *b, const struct persona *p, char *out, size_t c
  * many boots, when it last heard the user. Load after the log. */
 void brain_bond_load(struct brain *b, const char *text, long now);
 void brain_bond_save(const struct brain *b, long now, char *out, size_t cap);
+
+/* Its own language model (llm.c), trained on the conversation, on this
+ * machine. brain_review studies in a pause for up to `budget_ms`
+ * milliseconds and returns the steps it did (0 when there is nothing new
+ * left to study: brain_wants_review). The weights are the one part of the
+ * mind that is slow to rebuild, so they are saved (model.bin): save returns
+ * malloc'd bytes, or NULL when little changed and not `force`. */
+int  brain_review(struct brain *b, int budget_ms);
+int  brain_wants_review(const struct brain *b);
+int  brain_model_load(struct brain *b, const unsigned char *data, size_t len);
+unsigned char *brain_model_save(struct brain *b, size_t *len, int force);
+int  brain_speaks_itself(const struct brain *b);      /* the model is trained enough to answer */
 
 #endif
