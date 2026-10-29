@@ -20,5 +20,6 @@ struct fb {
 int  fb_open(struct fb *f, const char *dev);      /* -1 and errno on failure */
 void fb_close(struct fb *f);
 void fb_blit(struct fb *f, const struct canvas *c);
+void fb_blit_rect(struct fb *f, const struct canvas *c, int x, int y, int w, int h);   /* just that part */
 
 #endif

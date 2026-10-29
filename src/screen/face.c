@@ -215,12 +215,35 @@ const char *face_expr(const struct face *f, long now)
     return "calm";
 }
 
+/* Everything about the frame at `now` that is not in the state itself,
+ * hashed: the breathing, the blink, the mouth, the lamps, the signs. */
+static uint32_t pose_of(const struct face *f, long now)
+{
+    double t = now / 1000.0;
+    const char *e = face_expr(f, now);
+    int talking = face_talking(f, now);
+    long since_blink = now - f->blink_at;
+    int bob = (int)lround(2.0 * sin(t * 2 * M_PI / 2.4));
+    if (talking) bob += (int)lround(1.5 * sin(t * 2 * M_PI / 0.3));
+    if (strcmp(e, "dizzy") == 0) bob += (int)lround(2.0 * sin(t * 2 * M_PI / 0.15));
+    int sway = (int)lround(2 * sin(t * 2 * M_PI / 1.7));
+    int pulse = (int)lround(1.0 + sin(t * 2 * M_PI / (talking ? 0.4 : 2.4)));
+    int blink = since_blink < 180 ? (int)(since_blink / 45) : 9;
+    int mouth = talking ? (int)(now / 40) : 0;
+    int sign = strcmp(e, "sleep") == 0 ? (int)(now / 700) % 3 : (int)lround(3 * sin(t * 2 * M_PI / 1.1));
+    uint32_t h = 2166136261u;
+    const int v[] = { bob, sway, pulse, blink, mouth, sign, f->look_x, f->look_y, talking, f->mood, f->bond, f->stage, f->body };
+    for (size_t i = 0; i < sizeof v / sizeof v[0]; i++) h = (h ^ (uint32_t)(v[i] + 1000)) * 16777619u;
+    for (const char *c = e; *c; c++) h = (h ^ (uint8_t)*c) * 16777619u;
+    return h;
+}
+
 int face_tick(struct face *f, long now)
 {
     if (now >= f->blink_next) { f->blink_at = now; f->blink_next = now + 2500 + (long)(rnd(f) % 3500); }
     if (f->look_x != f->target_x) f->look_x += f->look_x < f->target_x ? 1 : -1;
     if (f->look_y != f->target_y) f->look_y += f->look_y < f->target_y ? 1 : -1;
-    return 1;                   /* it breathes: every frame moves a little */
+    return pose_of(f, now) != f->pose;          /* only a frame that would look different */
 }
 
 /* ---- drawing */
@@ -253,29 +276,10 @@ void face_draw(struct face *f, struct canvas *cv, const struct font *font, int x
     if (eq(e, "dizzy")) bob += (int)lround(2.0 * sin(t * 2 * M_PI / 0.15));
     int tilt = eq(e, "curious") || eq(e, "puzzled") ? 6 : 0;         /* the head leans */
     int happy = eq(e, "happy") || eq(e, "love") || eq(e, "shy");
-    int HW = 54 + 3 * st, HH = 46 + 2 * st;                           /* the head: a rounded box, bigger with age */
-    int cx = x + FACE_W / 2 + tilt, cy = y + 98 + bob;
+    int HW = 66 + 3 * st, HH = 52 + 2 * st;                           /* the head: a rounded box, bigger with age */
+    int cx = x + FACE_W / 2 + tilt, cy = y + 100 + bob;
     uint32_t acc = c_accent[st];
-
-    /* the body: a small rounded chest under the head, with arms from stage 2 */
-    int BW = 32 + 3 * st, by0 = cy + HH - 6, by1 = y + FACE_H - 30;
-    if (st >= 2) {
-        int wave = happy ? (int)lround(10 + 4 * sin(t * 2 * M_PI / 0.6)) : 0;
-        for (int sgn = -1; sgn <= 1; sgn += 2) {
-            int ax = cx + sgn * (BW + 9), ay = by0 + 26 - wave;
-            ellipse(cv, ax, ay, 9, 13, C_LINE);
-            ellipse(cv, ax, ay, 7, 11, C_BODY);
-            disc(cv, ax, ay + 6, 4, acc);                             /* a little glove */
-        }
-    }
-    rrect(cv, cx - BW - 2, by0 - 2, cx + BW + 2, by1 + 2, 18, C_LINE);
-    rrect(cv, cx - BW, by0, cx + BW, by1, 16, C_BODY);
-    canvas_fill(cv, cx - BW + 6, by1 - 10, 2 * BW - 11, 2, C_BODY_S);   /* a seam */
-    if (st >= 3) { canvas_fill(cv, cx - BW + 6, by1 - 15, 2 * BW - 11, 2, acc); }
-    /* the chest lamp: a dot of the age's colour, a heart once family */
-    int lamp_y = by0 + 22;
-    if (f->bond >= 85) { heart(cv, cx, lamp_y, 7, C_LINE); heart(cv, cx, lamp_y, 5, C_HEART); }
-    else { disc(cv, cx, lamp_y, 6, C_LINE); disc(cv, cx, lamp_y, 4, st >= 1 ? acc : C_BODY_S); }
+    f->pose = pose_of(f, now);
 
     /* the antenna: a stem and a lamp that glows with the mood */
     int ant_x = cx + (int)lround(2 * sin(t * 2 * M_PI / 1.7)) + tilt / 2, ant_top = cy - HH - 16;
@@ -288,49 +292,51 @@ void face_draw(struct face *f, struct canvas *cv, const struct font *font, int x
     disc(cv, ant_x, ant_top - 1, 4 + pulse, lamp);
     disc(cv, ant_x - 1, ant_top - 3, 1, C_GLOW_L);
 
-    /* the ears from stage 1: round modules on the sides that light up when listening */
+    /* the ears from stage 1: round modules on the sides that light up when
+     * listening; little hearts on them once family */
     if (st >= 1) {
         for (int sgn = -1; sgn <= 1; sgn += 2) {
             int ex = cx + sgn * (HW + 4), ey = cy + 2;
-            disc(cv, ex, ey, 12, C_LINE);
-            disc(cv, ex, ey, 10, C_BODY);
-            disc(cv, ex, ey, 6, eq(e, "listen") ? C_GLOW : acc);
-            if (eq(e, "listen")) disc(cv, ex, ey, 3, C_GLOW_L);
+            disc(cv, ex, ey, 13, C_LINE);
+            disc(cv, ex, ey, 11, C_BODY);
+            if (eq(e, "listen")) { disc(cv, ex, ey, 7, C_GLOW); disc(cv, ex, ey, 3, C_GLOW_L); }
+            else if (f->bond >= 85) heart(cv, ex, ey, 6, C_HEART);
+            else disc(cv, ex, ey, 6, acc);
         }
     }
 
     /* the head and its screen */
-    rrect(cv, cx - HW - 2, cy - HH - 2, cx + HW + 2, cy + HH + 2, 28, C_LINE);
-    rrect(cv, cx - HW, cy - HH, cx + HW, cy + HH, 26, C_BODY);
-    rrect(cv, cx - HW + 4, cy + HH - 9, cx + HW - 4, cy + HH - 4, 4, C_BODY_S);    /* the chin's shade */
-    int SW = HW - 9, SH = HH - 9;
-    rrect(cv, cx - SW - 1, cy - SH - 1, cx + SW + 1, cy + SH + 1, 20, C_LINE);
-    rrect(cv, cx - SW, cy - SH, cx + SW, cy + SH, 19, C_SCREEN_L);
-    rrect(cv, cx - SW + 2, cy - SH + 2, cx + SW - 2, cy + SH - 2, 17, C_SCREEN);
+    rrect(cv, cx - HW - 2, cy - HH - 2, cx + HW + 2, cy + HH + 2, 30, C_LINE);
+    rrect(cv, cx - HW, cy - HH, cx + HW, cy + HH, 28, C_BODY);
+    rrect(cv, cx - HW + 24, cy + HH - 9, cx + HW - 24, cy + HH - 5, 3, C_BODY_S);  /* the chin's shade */
+    int SW = HW - 10, SH = HH - 10;
+    rrect(cv, cx - SW - 1, cy - SH - 1, cx + SW + 1, cy + SH + 1, 22, C_LINE);
+    rrect(cv, cx - SW, cy - SH, cx + SW, cy + SH, 21, C_SCREEN_L);
+    rrect(cv, cx - SW + 2, cy - SH + 2, cx + SW - 2, cy + SH - 2, 19, C_SCREEN);
     if (st >= 3) {                                                    /* a star on the forehead corner */
-        int sx0 = cx - SW + 12, sy0 = cy - SH + 10;
+        int sx0 = cx - SW + 14, sy0 = cy - SH + 12;
         for (int k = 0; k < 5; k++) {
             double a0 = (k * 72 - 90) * M_PI / 180, a1 = ((k * 72 + 36) - 90) * M_PI / 180, a2 = ((k + 1) * 72 - 90) * M_PI / 180;
-            tri(cv, sx0 + (int)lround(5 * cos(a0)), sy0 + (int)lround(5 * sin(a0)), sx0 + (int)lround(2 * cos(a1)), sy0 + (int)lround(2 * sin(a1)), sx0, sy0, C_YELLOW);
-            tri(cv, sx0 + (int)lround(5 * cos(a2)), sy0 + (int)lround(5 * sin(a2)), sx0 + (int)lround(2 * cos(a1)), sy0 + (int)lround(2 * sin(a1)), sx0, sy0, C_YELLOW);
+            tri(cv, sx0 + (int)lround(6 * cos(a0)), sy0 + (int)lround(6 * sin(a0)), sx0 + (int)lround(2 * cos(a1)), sy0 + (int)lround(2 * sin(a1)), sx0, sy0, C_YELLOW);
+            tri(cv, sx0 + (int)lround(6 * cos(a2)), sy0 + (int)lround(6 * sin(a2)), sx0 + (int)lround(2 * cos(a1)), sy0 + (int)lround(2 * sin(a1)), sx0, sy0, C_YELLOW);
         }
     }
 
     /* the cheeks glow from 友達 */
     int rosy = f->bond >= 35 || eq(e, "shy") || eq(e, "love");
     if (rosy && !asleep) {
-        ellipse(cv, cx - SW + 16, cy + 10, 8, 4, C_BLUSH);
-        ellipse(cv, cx + SW - 16, cy + 10, 8, 4, C_BLUSH);
+        ellipse(cv, cx - SW + 18, cy + 12, 9, 4, C_BLUSH);
+        ellipse(cv, cx + SW - 18, cy + 12, 9, 4, C_BLUSH);
     }
 
     /* the eyes, drawn in light */
-    int ex0 = 20 + 3 * st, ey0 = cy - 6 + f->look_y;
+    int ex0 = 24 + 3 * st, ey0 = cy - 6 + f->look_y;
     long since_blink = now - f->blink_at;
     double blink = since_blink < 180 ? 1.0 - labs(since_blink - 90) / 90.0 : 0;   /* 0 open .. 1 closed */
     int closed = asleep || eq(e, "nod") || blink > 0.75;
     int half = eq(e, "drowsy") || eq(e, "tired");
     int wide = eq(e, "surprised") || eq(e, "listen") || eq(e, "curious");
-    int rx0 = 8 + st, ry0 = 10 + st;
+    int rx0 = 10 + st, ry0 = 12 + st;
     for (int sgn = -1; sgn <= 1; sgn += 2) {
         int ecx = cx + sgn * ex0 + f->look_x, ecy = ey0;
         if (eq(e, "dizzy")) {                                   /* spirals */
@@ -362,7 +368,7 @@ void face_draw(struct face *f, struct canvas *cv, const struct font *font, int x
     }
 
     /* the mouth, also in light */
-    int my = cy + 18;
+    int my = cy + 22;
     if (talking) {                                              /* a voice: bars that dance */
         for (int k = -2; k <= 2; k++) {
             int h = 2 + (int)lround(4 * fabs(sin(t * 2 * M_PI / (0.17 + 0.03 * (k + 2)) + k)));
@@ -393,7 +399,7 @@ void face_draw(struct face *f, struct canvas *cv, const struct font *font, int x
         int hy = sy - 4 - (int)lround(3 * sin(t * 2 * M_PI / 1.1));
         heart(cv, sx, hy, 7, C_HEART);
     } else if (eq(e, "tired")) {
-        ellipse(cv, cx + HW - 10, cy - HH / 2, 3, 5, C_SWEAT);
+        ellipse(cv, cx + HW - 12, cy - HH / 2, 3, 5, C_SWEAT);
     } else if (asleep) {
         int k = (int)(now / 700) % 3;
         for (int i = 0; i <= k; i++) font_text(font, cv, sx + i * 10, sy - 10 - i * 12, "z", C_Z, C_BG);

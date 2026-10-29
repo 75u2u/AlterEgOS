@@ -446,6 +446,8 @@ static void test_face(const char *fontpath)
     CHECK(cv.px[(size_t)(10 + 100) * cv.w + 10 + FACE_W / 2] == 0x1B2535, "the screen at the centre: %06x", cv.px[(size_t)110 * cv.w + 10 + FACE_W / 2]);
     CHECK(strcmp(fc.label, "うれしい") == 0, "label %s", fc.label);
     CHECK(fc.look_x == 4, "eyes toward the pointer: %d", fc.look_x);
+    CHECK(face_tick(&fc, now + 800) == 0, "nothing moved: no redraw");
+    CHECK(face_tick(&fc, now + 800 + 700) == 1, "later it breathed: redraw");
     int outside = 0;
     for (int y = 0; y < cv.h; y++) for (int x = 0; x < cv.w; x++)
         if ((x < 10 || y < 10 || x >= 10 + FACE_W || y >= 10 + FACE_H) && cv.px[(size_t)y * cv.w + x] != 0x123456) outside++;
@@ -454,10 +456,10 @@ static void test_face(const char *fontpath)
     canvas_fill(&cv, 0, 0, cv.w, cv.h, 0x123456);
     face_set(&fc, "mood=0;bond=0;stage=0;body=0;expr=;say=0", now);
     face_draw(&fc, &cv, &f, 10, 10, now);
-    CHECK(cv.px[(size_t)(10 + 100) * cv.w + 10 + 185] == 0x123456, "newborn has no ear: %06x", cv.px[(size_t)(10 + 100) * cv.w + 10 + 185]);
+    CHECK(cv.px[(size_t)(10 + 100) * cv.w + 10 + 196] == 0x123456, "newborn has no ear: %06x", cv.px[(size_t)(10 + 100) * cv.w + 10 + 196]);
     face_set(&fc, "mood=0;bond=0;stage=1;body=0;expr=;say=0", now);
     face_draw(&fc, &cv, &f, 10, 10, now);
-    CHECK(cv.px[(size_t)(10 + 100) * cv.w + 10 + 185] != 0x123456, "片言 has an ear");
+    CHECK(cv.px[(size_t)(10 + 100) * cv.w + 10 + 196] != 0x123456, "片言 has an ear");
     canvas_free(&cv);
     font_free(&f);
 }

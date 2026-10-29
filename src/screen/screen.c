@@ -66,7 +66,7 @@
 #define C_CURSOR  0xE6E6E6
 #define C_BOLD    0xFFFFFF
 #define C_FACEBG  0x1A2230
-#define FACE_FPS_MS 80          /* the character is redrawn this often while it is on screen */
+#define FACE_FPS_MS 80          /* the character is looked at this often while it is on screen; drawn only when it moved */
 
 /* The 16 ANSI colors, as cell.fg 1..16. */
 static const uint32_t g_ansi[16] = {
@@ -498,6 +498,34 @@ static void draw_pointer(void)
         }
 }
 
+static void render(void);
+
+/* Is anything drawn over the face window: a window above it in the order, or the menu? */
+static int face_covered(void)
+{
+    const struct win *fw = &g_win[W_FACE];
+    int fx1 = fw->x + win_w(fw), fy1 = fw->y + win_h(fw), above = 0;
+    for (int k = 0; k < WIN_MAX; k++) {
+        const struct win *w = &g_win[g_order[k]];
+        if (w == fw) { above = 1; continue; }
+        if (!above || !w->visible) continue;
+        if (w->x < fx1 && w->x + win_w(w) > fw->x && w->y < fy1 && w->y + win_h(w) > fw->y) return 1;
+    }
+    return g_menu_open;
+}
+
+/* The face moved and nothing else did: redraw its window alone and put only
+ * that part on the screen, so that an animated character costs little. */
+static void render_face(void)
+{
+    const struct win *fw = &g_win[W_FACE];
+    if (face_covered()) { render(); return; }
+    draw_win(W_FACE);
+    draw_pointer();
+    if (g_fb.mem) fb_blit_rect(&g_fb, &g_cv, fw->x, fw->y, win_w(fw), win_h(fw));
+    else if (g_snapshot) write_ppm(g_snapshot);
+}
+
 static void render(void)
 {
     canvas_fill(&g_cv, 0, 0, g_cv.w, g_cv.h, C_DESK);
@@ -880,8 +908,9 @@ int main(void)
             if (g_win[i].fd < 0 && g_win[i].respawn_at && now >= g_win[i].respawn_at) win_spawn(&g_win[i]);
         if (now - last_scan >= 2) { last_scan = now; if (input_scan(&g_in) != kbd + ptr) { kbd = ptr = 0; for (int i = 0; i < g_in.n; i++) { if (g_in.dev[i].kind == DEV_KEYBOARD) kbd++; else ptr++; } } }
         if (now / 60 != last_minute) { last_minute = now / 60; g_dirty = 1; }
-        if (face_live && now_ms() - g_face_drawn >= FACE_FPS_MS && face_tick(&g_face, now_ms())) g_dirty = 1;
+        int face_moved = face_live && now_ms() - g_face_drawn >= FACE_FPS_MS && face_tick(&g_face, now_ms());
         if (g_dirty) render();
+        else if (face_moved) render_face();
     }
     for (int i = 0; i < WIN_MAX; i++) if (g_win[i].pid > 0) kill(g_win[i].pid, SIGTERM);
     return 0;
