@@ -8,3 +8,4 @@ src/web/alterego-web
 src/web/web-test
 src/agent/llm_test
 src/agent/llm_test_double
+screenshot*.png
