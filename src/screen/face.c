@@ -16,22 +16,29 @@
 #define SAY_MS_PER_CP 70
 #define SAY_MIN_MS 500
 
-#define C_SKIN   0xFFDFC4
-#define C_SHADE  0xE8B898
-#define C_HAIR   0x6B4F3A
+#define C_SKIN   0xFFE9DA
+#define C_SHADE  0xF2C9B4
+#define C_LINE   0x5A3E4A         /* the ink of the line art */
+#define C_HAIR   0xB9A5DC         /* soft lavender */
+#define C_HAIR_D 0x8E78B8         /* its shadow */
+#define C_HAIR_L 0xE2D8F4         /* its shine */
 #define C_WHITE  0xFFFFFF
-#define C_IRIS   0x3A2A20
-#define C_INK    0x2B1D16
-#define C_MOUTH  0xC0504D
-#define C_TONGUE 0xE88080
-#define C_BLUSH  0xFFB3B3
+#define C_IRIS   0x4FB0CC         /* teal */
+#define C_IRIS_D 0x2A6E8C
+#define C_IRIS_L 0x9FE3F0
+#define C_INK    0x2B1D26
+#define C_MOUTH  0xD8707A
+#define C_TONGUE 0xF0A0A8
+#define C_BLUSH  0xFFB6C1
 #define C_SWEAT  0x7FC8FF
 #define C_HEART  0xFF6B8A
 #define C_TEXT   0xDDE3EA
 #define C_DIM    0x7F8894
 #define C_Z      0xA0B0C0
+#define C_BG     0x1A2230
 
-static const uint32_t c_cloth[4] = { 0xF5E6C8, 0xFFE2A8, 0x9ED9C5, 0x7CC4D9 };
+static const uint32_t c_cloth[4] = { 0xFFF1DC, 0xFFE6A8, 0xA8E6D4, 0x9ACFF0 };
+static const uint32_t c_cloth_d[4] = { 0xE8D4B8, 0xE8C880, 0x78C0A8, 0x68A8D8 };
 
 /* ---- drawing primitives, clipped to the canvas */
 
@@ -90,6 +97,33 @@ static void bow(struct canvas *cv, int x0, int x1, int y, int bend, int thick, u
         line(cv, px, py, x, yy, thick, c);
         px = x; py = yy;
     }
+}
+
+/* A filled triangle (scanline). */
+static void tri(struct canvas *cv, int x0, int y0, int x1, int y1, int x2, int y2, uint32_t c)
+{
+    int ymin = y0 < y1 ? (y0 < y2 ? y0 : y2) : (y1 < y2 ? y1 : y2);
+    int ymax = y0 > y1 ? (y0 > y2 ? y0 : y2) : (y1 > y2 ? y1 : y2);
+    for (int y = ymin; y <= ymax; y++) {
+        int xs[3], n = 0;
+        int px[3] = { x0, x1, x2 }, py[3] = { y0, y1, y2 };
+        for (int e = 0; e < 3; e++) {
+            int ax = px[e], ay = py[e], bx = px[(e + 1) % 3], by = py[(e + 1) % 3];
+            if (ay == by) continue;
+            if ((y >= ay && y <= by) || (y >= by && y <= ay)) xs[n++] = ax + (int)lround((double)(bx - ax) * (y - ay) / (by - ay));
+        }
+        if (n < 2) continue;
+        int lo = xs[0], hi = xs[0];
+        for (int m = 1; m < n; m++) { if (xs[m] < lo) lo = xs[m]; if (xs[m] > hi) hi = xs[m]; }
+        for (int x = lo; x <= hi; x++) put(cv, x, y, c);
+    }
+}
+
+/* A spike of hair: a tapered triangle with its line-art edge. */
+static void spike(struct canvas *cv, int bx0, int bx1, int by, int tx, int ty, uint32_t fill)
+{
+    tri(cv, bx0 - 1, by, bx1 + 1, by, tx, ty + 2, C_LINE);
+    tri(cv, bx0, by, bx1, by, tx, ty, fill);
 }
 
 /* ---- state */
@@ -201,147 +235,206 @@ void face_draw(struct face *f, struct canvas *cv, const struct font *font, int x
     if (talking) bob += (int)lround(1.5 * sin(t * 2 * M_PI / 0.3));
     if (eq(e, "dizzy")) bob += (int)lround(2.0 * sin(t * 2 * M_PI / 0.15));
     int tilt = eq(e, "curious") || eq(e, "puzzled") ? 6 : 0;         /* the head leans */
-    int R = 56 + 3 * f->stage;                                        /* a big round head: chibi */
-    int cx = x + FACE_W / 2 + tilt, cy = y + 106 + bob;
+    int R = 56 + 2 * f->stage;                                        /* the head: wide at the cheeks, a soft chin */
+    int cx = x + FACE_W / 2 + tilt, cy = y + 104 + bob;
+    int st = f->stage;
 
-    /* the body: small, round shoulders, a round collar, the colour of its age */
-    uint32_t cloth = c_cloth[f->stage];
-    int bw = 40 + 5 * f->stage, by = cy + R - 10;
-    ellipse(cv, x + FACE_W / 2, by + 26, bw, 24, cloth);
-    canvas_fill(cv, x + FACE_W / 2 - bw, by + 26, 2 * bw + 1, y + FACE_H - 34 - (by + 26), cloth);
-    disc(cv, x + FACE_W / 2, by + 2, 10, C_SHADE);                 /* the neck */
-    ellipse(cv, x + FACE_W / 2, by + 12, 14, 5, C_SKIN);            /* the collar opening */
+    /* the body: narrow shoulders, a round collar, line art around it */
+    int bw = 36 + 4 * st, by = cy + R - 6;
+    int bottom = y + FACE_H - 32;
+    ellipse(cv, x + FACE_W / 2, by + 24, bw + 2, 22, C_LINE);
+    canvas_fill(cv, x + FACE_W / 2 - bw - 2, by + 24, 2 * bw + 5, bottom - (by + 24), C_LINE);
+    ellipse(cv, x + FACE_W / 2, by + 24, bw, 20, c_cloth[st]);
+    canvas_fill(cv, x + FACE_W / 2 - bw, by + 24, 2 * bw + 1, bottom - (by + 24), c_cloth[st]);
+    canvas_fill(cv, x + FACE_W / 2 - bw, by + 30, 2 * bw + 1, 2, c_cloth_d[st]);        /* a seam */
+    disc(cv, x + FACE_W / 2, by + 2, 9, C_SHADE);                                      /* the neck */
+    ellipse(cv, x + FACE_W / 2, by + 10, 13, 5, C_LINE);
+    ellipse(cv, x + FACE_W / 2, by + 10, 11, 3, C_SKIN);                                /* the collar opening */
 
-    /* hair behind the head: fuller with age, never long */
-    if (f->stage >= 2) ellipse(cv, cx, cy - 14, R + 3 + 2 * (f->stage - 2), R - 4, C_HAIR);
-    /* the head: a little wider than tall, with a soft chin */
-    ellipse(cv, cx, cy, R, R - 2, C_SKIN);
-    /* hair on top: a newborn's tuft; then soft tufts of short hair that
-     * cover the top of the head down to a wavy fringe, side tufts later */
-    if (f->stage == 0) { disc(cv, cx + 3, cy - R + 3, 7, C_HAIR); disc(cv, cx - 5, cy - R + 7, 5, C_HAIR); }
-    else {
-        int fringe_base = cy - R / 3 - (f->stage == 1 ? 6 : 0);
-        for (int i = -R; i <= R; i++) {
-            double fr = 1.0 - (double)i * i / ((double)R * R);
+    /* hair behind the head: a soft mass that sits high and stops at the cheeks, fuller with age */
+    if (st >= 1) {
+        struct clip saved = g_clip;
+        int hr = R + 4 + 3 * st;
+        if (g_clip.y1 > cy + R / 4) g_clip.y1 = cy + R / 4;              /* nothing below cheek level */
+        ellipse(cv, cx, cy - 14, hr + 2, hr - 2, C_LINE);
+        ellipse(cv, cx, cy - 14, hr, hr - 4, C_HAIR_D);
+        g_clip = saved;
+        if (st >= 2) {                                                /* side locks down the cheeks */
+            spike(cv, cx - R - 4, cx - R + 14, cy - 10, cx - R - 6, cy + R + 8 + 6 * (st - 2), C_HAIR_D);
+            spike(cv, cx + R - 14, cx + R + 4, cy - 10, cx + R + 6, cy + R + 8 + 6 * (st - 2), C_HAIR_D);
+        }
+    }
+    /* the face: round at the cheeks, a small soft chin; line art first */
+    int chin_y = cy + (int)(R * 0.42), chin_rx = (int)(R * 0.74), chin_ry = (int)(R * 0.56);
+    ellipse(cv, cx, cy - 4, R + 2, R + 1, C_LINE);
+    ellipse(cv, cx, chin_y, chin_rx + 2, chin_ry + 2, C_LINE);
+    ellipse(cv, cx, cy - 4, R, R - 1, C_SKIN);
+    ellipse(cv, cx, chin_y, chin_rx, chin_ry, C_SKIN);
+
+    /* the fringe: pointed bangs across the forehead, a shine, an ahoge */
+    int hl = cy - R + 6;                                              /* the hairline */
+    if (st == 0) {
+        spike(cv, cx - 12, cx + 2, hl - 2, cx - 10, hl + 16, C_HAIR);
+        spike(cv, cx - 2, cx + 12, hl - 2, cx + 10, hl + 14, C_HAIR);
+        ellipse(cv, cx, hl - 4, 14, 6, C_LINE);
+        ellipse(cv, cx, hl - 4, 12, 4, C_HAIR);
+    } else {
+        /* the cap of hair: the top of a bigger ellipse, down to a wavy fringe line */
+        int hrx = R + 4, hry = R + 2, hcy = cy - 8;
+        for (int i = -hrx; i <= hrx; i++) {
+            double fr = 1.0 - (double)i * i / ((double)hrx * hrx);
             if (fr < 0) continue;
-            int top = cy - (int)((R - 2) * sqrt(fr) + 0.5) - 3;
-            int fringe = fringe_base + (int)lround(7 * cos(i * 0.22 + 0.6)) + (int)lround(3 * sin(i * 0.61));
-            if (abs(i) > R - 12) fringe = cy + (f->stage >= 2 ? R / 4 : 0);   /* down over the ears */
+            int top = hcy - (int)(hry * sqrt(fr) + 0.5);
+            int fringe = hl + 12 + (int)lround(4 * cos(i * 0.25));
+            if (abs(i) > R - 6) fringe = cy + R / 3;                 /* down the sides, over the ears */
+            for (int yy = top - 2; yy < fringe + 2; yy++) put(cv, cx + i, yy, C_LINE);
+        }
+        for (int i = -hrx + 2; i <= hrx - 2; i++) {
+            double fr = 1.0 - (double)i * i / ((double)(hrx - 2) * (hrx - 2));
+            if (fr < 0) continue;
+            int top = hcy - (int)((hry - 2) * sqrt(fr) + 0.5);
+            int fringe = hl + 12 + (int)lround(4 * cos(i * 0.25));
+            if (abs(i) > R - 6) fringe = cy + R / 3;
             for (int yy = top; yy < fringe; yy++) put(cv, cx + i, yy, C_HAIR);
         }
-        /* tufts along the top so it looks fluffy, not a helmet */
-        for (int k = -3; k <= 3; k++) {
-            double a = (k * 22.0 - 90.0) * M_PI / 180.0;
-            disc(cv, cx + (int)lround((R - 4) * cos(a)), cy - 2 + (int)lround((R - 6) * sin(a)), 10 + f->stage, C_HAIR);
+        /* the bangs: sharp spikes hanging over the forehead, the middle ones longer */
+        int nb = 6 + st;
+        for (int k = 0; k < nb; k++) {
+            double u = (k + 0.5) / nb;                                /* 0..1 across the forehead */
+            int bx0 = cx - R + (int)lround(2.0 * R * (k / (double)nb)) + 2;
+            int bx1 = cx - R + (int)lround(2.0 * R * ((k + 1) / (double)nb)) - 2;
+            double curve = 1.0 - 4.0 * (u - 0.5) * (u - 0.5);           /* longer in the middle */
+            int len = 14 + (int)lround(14 * curve) + ((k % 2) ? 6 : 0);
+            int tx = (bx0 + bx1) / 2 + (k < nb / 2 ? -3 : 3);
+            spike(cv, bx0, bx1, hl + 8, tx, hl + 8 + len, C_HAIR);
         }
+        /* a shine band across the hair */
+        arc(cv, cx, hcy, R - 8, R - 12, 220, 320, 3, C_HAIR_L);
     }
-    /* the ahoge: one strand standing up, swaying */
-    {
+    {   /* the ahoge: one strand standing up, swaying */
         int sway = (int)lround(3 * sin(t * 2 * M_PI / 1.7));
-        int ax = cx + 6, ay = cy - R + (f->stage == 0 ? 2 : -2);
-        line(cv, ax, ay, ax + 6 + sway, ay - 14, 3, C_HAIR);
-        line(cv, ax + 6 + sway, ay - 14, ax + 2 + sway, ay - 22, 3, C_HAIR);
+        int ax = cx + 8, ay = cy - R - (st ? 4 : 0);
+        line(cv, ax, ay, ax + 8 + sway, ay - 14, 5, C_LINE);
+        line(cv, ax + 8 + sway, ay - 14, ax + 2 + sway, ay - 24, 5, C_LINE);
+        line(cv, ax, ay, ax + 8 + sway, ay - 14, 3, C_HAIR);
+        line(cv, ax + 8 + sway, ay - 14, ax + 2 + sway, ay - 24, 3, C_HAIR);
     }
-    if (f->stage >= 3) {                                                /* a small star clip in the hair */
-        int sx0 = cx - R + 22, sy0 = cy - R + 24;
+    if (st >= 3) {                                                    /* a small star clip in the hair */
+        int sx0 = cx - R + 16, sy0 = cy - R + 30;
         for (int k = 0; k < 5; k++) {
             double a0 = (-90 + k * 72) * M_PI / 180.0, a1 = (-90 + (k + 2) * 72) * M_PI / 180.0;
-            line(cv, sx0 + (int)lround(7 * cos(a0)), sy0 + (int)lround(7 * sin(a0)), sx0 + (int)lround(7 * cos(a1)), sy0 + (int)lround(7 * sin(a1)), 2, 0xFFD866);
+            line(cv, sx0 + (int)lround(7 * cos(a0)), sy0 + (int)lround(7 * sin(a0)), sx0 + (int)lround(7 * cos(a1)), sy0 + (int)lround(7 * sin(a1)), 3, 0xFFD866);
         }
         disc(cv, sx0, sy0, 3, 0xFFD866);
     }
 
-    /* cheeks: always a little rosy, more from friendship on and when shy or loved */
+    /* cheeks: a pink flush with three little strokes, stronger when shy or loved */
     int rosy = f->bond >= 35 || eq(e, "shy") || eq(e, "love") || eq(e, "happy");
-    ellipse(cv, cx - R / 2, cy + R / 4, rosy ? 11 : 8, rosy ? 6 : 4, rosy ? C_BLUSH : 0xFFCFC0);
-    ellipse(cv, cx + R / 2, cy + R / 4, rosy ? 11 : 8, rosy ? 6 : 4, rosy ? C_BLUSH : 0xFFCFC0);
+    for (int sgn = -1; sgn <= 1; sgn += 2) {
+        int bx = cx + sgn * (R / 2 + 2), byy = cy + R / 3 - 2;
+        ellipse(cv, bx, byy, rosy ? 12 : 9, rosy ? 6 : 4, rosy ? C_BLUSH : 0xFFD5D0);
+        if (rosy) for (int k = -1; k <= 1; k++) line(cv, bx + k * 6 - 2, byy - 3, bx + k * 6 + 2, byy + 3, 1, 0xE88898);
+    }
 
-    /* eyes: big, set low on the face */
-    int ex = R / 2 - 3, ey = cy + R / 12;
+    /* the eyes: large, far apart, set low; an outline, a thick upper lid
+     * with a lash, a coloured iris darker at the top, two lights */
+    int ex = R / 2 + 2, ey = cy + R / 8;
     long since_blink = now - f->blink_at;
     double blink = since_blink < 180 ? 1.0 - labs(since_blink - 90) / 90.0 : 0;   /* 0 open .. 1 closed */
     int closed = asleep || eq(e, "nod") || blink > 0.75;
     int droop = eq(e, "drowsy") || eq(e, "tired") ? 1 : 0;
     int wide = eq(e, "surprised") || eq(e, "listen") || eq(e, "curious");
-    for (int s = -1; s <= 1; s += 2) {
-        int ecx = cx + s * ex, ecy = ey;
+    int rx0 = st == 0 ? 10 : 12, ry0 = st == 0 ? 11 : 15;
+    for (int sgn = -1; sgn <= 1; sgn += 2) {
+        int ecx = cx + sgn * ex, ecy = ey;
         if (eq(e, "dizzy")) {                                   /* spirals */
-            arc(cv, ecx, ecy, 8, 8, 0, 300, 2, C_INK);
-            arc(cv, ecx, ecy, 4, 4, 60, 360, 2, C_INK);
+            arc(cv, ecx, ecy, 9, 9, 0, 300, 2, C_INK);
+            arc(cv, ecx, ecy, 5, 5, 60, 360, 2, C_INK);
             continue;
         }
-        if (eq(e, "happy") && f->stage >= 1) {                  /* smiling eyes: arcs */
-            arc(cv, ecx, ecy + 4, 10, 8, 200, 340, 3, C_INK);
+        if (eq(e, "happy") && st >= 1) {                        /* smiling eyes: ^ ^ */
+            arc(cv, ecx, ecy + 5, rx0, ry0 - 4, 200, 340, 4, C_INK);
+            line(cv, ecx + sgn * (rx0 + 1), ecy - 2, ecx + sgn * (rx0 + 5), ecy - 6, 3, C_INK);   /* the lash */
             continue;
         }
-        if (closed) { bow(cv, ecx - 9, ecx + 9, ecy + 2, 3, 2, C_INK); continue; }
-        if (f->stage == 0) {                                    /* a newborn: big dots */
-            int r = wide ? 7 : 6;
-            disc(cv, ecx + f->look_x / 2, ecy + f->look_y / 2, r, C_INK);
-            disc(cv, ecx + f->look_x / 2 - 2, ecy + f->look_y / 2 - 2, 2, C_WHITE);
+        if (closed) {
+            bow(cv, ecx - rx0, ecx + rx0, ecy + 1, asleep ? 4 : 3, 3, C_INK);
+            line(cv, ecx + sgn * (rx0 + 1), ecy + 1, ecx + sgn * (rx0 + 5), ecy - 3, 3, C_INK);
             continue;
         }
-        int rx = 9 + (wide ? 1 : 0), ry = (int)lround((12 + (wide ? 3 : 0)) * (1.0 - blink * 0.9)) - droop * 5;
-        if (ry < 2) ry = 2;
+        int rx = rx0 + (wide ? 1 : 0), ry = (int)lround((ry0 + (wide ? 3 : 0)) * (1.0 - blink * 0.9)) - droop * 6;
+        if (ry < 3) ry = 3;
+        ellipse(cv, ecx, ecy, rx + 2, ry + 2, C_LINE);          /* the outline */
         ellipse(cv, ecx, ecy, rx, ry, C_WHITE);
-        int ix = ecx + f->look_x, iy = ecy + f->look_y;
-        int iry = ry < 8 ? ry : 8;
-        ellipse(cv, ix, iy, 6, iry, eq(e, "love") ? C_HEART : C_IRIS);
-        ellipse(cv, ix, iy + 2, 4, iry > 4 ? iry - 3 : 1, eq(e, "love") ? 0xFF9BB0 : 0x6B4A3A);   /* the lighter lower iris */
-        disc(cv, ix - 2, iy - 3, 2 + (f->bond >= 60), C_WHITE);  /* the big sparkle */
-        disc(cv, ix + 3, iy + 3, 1, C_WHITE);                      /* and the small one */
-        if (droop) ellipse(cv, ecx, ecy - ry, rx + 1, 5, C_SKIN); /* the lid */
+        int ix = ecx + f->look_x, iy = ecy + 2 + f->look_y;
+        int irx = rx - 3, iry = ry - 2 > 2 ? ry - 2 : 2;
+        uint32_t ci = eq(e, "love") ? C_HEART : C_IRIS, cd = eq(e, "love") ? 0xD04060 : C_IRIS_D, cl = eq(e, "love") ? 0xFFB0C0 : C_IRIS_L;
+        ellipse(cv, ix, iy, irx + 1, iry + 1, C_INK);            /* the iris rim */
+        ellipse(cv, ix, iy, irx, iry, ci);
+        ellipse(cv, ix, iy - iry / 2, irx - 1, iry / 2 + 1, cd); /* darker at the top (the lid's shadow) */
+        ellipse(cv, ix, iy + iry / 3, irx / 2, iry / 3 + 1, cl); /* lighter at the bottom */
+        ellipse(cv, ix, iy, irx / 2 + 1, iry / 2 + 1, C_INK);    /* the pupil */
+        ellipse(cv, ix - irx / 2, iy - iry / 2, 4, 3, C_WHITE);  /* the big light */
+        disc(cv, ix + irx / 2, iy + iry / 2, 2, C_WHITE);        /* the small one */
+        /* the upper lid: thick, with a lash at the outer corner; the lower lid: thin */
+        arc(cv, ecx, ecy, rx + 1, ry + 1, 200, 340, 4, C_INK);
+        line(cv, ecx + sgn * (rx + 1), ecy - ry / 2, ecx + sgn * (rx + 6), ecy - ry / 2 - 5, 3, C_INK);
+        arc(cv, ecx, ecy, rx, ry, 30, 150, 1, C_LINE);
+        if (droop) { ellipse(cv, ecx, ecy - ry, rx + 3, 6, C_SKIN); arc(cv, ecx, ecy - ry + 4, rx + 1, 3, 180, 360, 3, C_INK); }
     }
 
-    /* eyebrows, from the chatty stage on: thin and soft */
-    if (f->stage >= 2 && !asleep) {
-        int by0 = ey - 20;
-        for (int s = -1; s <= 1; s += 2) {
-            int x0 = cx + s * (ex - 8), x1 = cx + s * (ex + 8);
+    /* eyebrows: thin, from the chatty stage on */
+    if (st >= 2 && !asleep) {
+        int by0 = ey - ry0 - 12;
+        for (int sgn = -1; sgn <= 1; sgn += 2) {
+            int x0 = cx + sgn * (ex - 9), x1 = cx + sgn * (ex + 9);
             int inner = 0, outer = 0;                           /* heights of the inner and outer ends */
             if (eq(e, "sad") || eq(e, "shy")) { inner = -4; outer = 2; }
             else if (eq(e, "angry")) { inner = 4; outer = -3; }
             else if (eq(e, "surprised") || eq(e, "curious") || eq(e, "listen")) { inner = -3; outer = -3; }
             else if (eq(e, "happy") || eq(e, "love")) { inner = -1; outer = -2; }
-            line(cv, x0, by0 + inner, x1, by0 + outer, 2, 0x5C4636);
+            line(cv, x0, by0 + inner, x1, by0 + outer, 2, C_HAIR_D);
         }
     }
 
-    /* the mouth: small */
-    int my = cy + R / 2;
+    /* the nose: a dot; the mouth: small */
+    disc(cv, cx + 1, cy + R / 2 - 6, 1, C_SHADE);
+    int my = cy + R / 2 + 6;
     if (talking) {
         int open = (int)lround(fabs(sin(t * 2 * M_PI / 0.22)) * 5) + 2;
-        ellipse(cv, cx, my + 1, 5, open, C_MOUTH);
-        if (open > 4) ellipse(cv, cx, my + 1 + open / 2, 3, open / 3, C_TONGUE);
+        ellipse(cv, cx, my + 1, 5, open + 1, C_LINE);
+        ellipse(cv, cx, my + 1, 4, open, C_MOUTH);
+        if (open > 4) ellipse(cv, cx, my + 1 + open / 2, 2, open / 3, C_TONGUE);
     } else if (eq(e, "happy") || eq(e, "love") || eq(e, "shy")) {
-        bow(cv, cx - 6, cx, my, 4, 2, C_INK);                   /* a little ω */
-        bow(cv, cx, cx + 6, my, 4, 2, C_INK);
+        tri(cv, cx - 6, my - 2, cx + 6, my - 2, cx, my + 5, C_LINE);  /* a little open smile */
+        tri(cv, cx - 4, my - 1, cx + 4, my - 1, cx, my + 3, C_MOUTH);
     } else if (eq(e, "sad") || eq(e, "tired") || eq(e, "dizzy")) {
-        bow(cv, cx - 5, cx + 5, my + 3, -3, 2, C_INK);
+        bow(cv, cx - 5, cx + 5, my + 2, -3, 2, C_LINE);
     } else if (eq(e, "surprised") || eq(e, "puzzled")) {
-        ellipse(cv, cx, my + 1, 3, eq(e, "surprised") ? 5 : 3, C_MOUTH);
+        ellipse(cv, cx, my + 1, 3, eq(e, "surprised") ? 5 : 3, C_LINE);
+        ellipse(cv, cx, my + 1, 2, eq(e, "surprised") ? 4 : 2, C_MOUTH);
     } else if (eq(e, "angry")) {
-        line(cv, cx - 6, my + 1, cx + 6, my + 1, 2, C_INK);
+        line(cv, cx - 6, my + 1, cx + 6, my + 1, 2, C_LINE);
     } else if (asleep || eq(e, "drowsy")) {
         ellipse(cv, cx, my + 1, 2, 2, C_MOUTH);
     } else {
-        bow(cv, cx - 4, cx + 4, my, 2, 2, C_INK);               /* calm, listening, curious, nod */
+        bow(cv, cx - 4, cx + 4, my, 2, 2, C_LINE);               /* calm, listening, curious, nod */
     }
 
     /* the small signs above the head */
-    int sx = cx + R - 6, sy = cy - R - 8;
-    if (eq(e, "puzzled") || eq(e, "curious")) font_text(font, cv, sx, sy - 8, "？", C_TEXT, 0x1A2230);
-    else if (eq(e, "surprised")) font_text(font, cv, sx, sy - 8, "！", C_TEXT, 0x1A2230);
+    int sx = cx + R - 2, sy = cy - R - 12;
+    if (eq(e, "puzzled") || eq(e, "curious")) font_text(font, cv, sx, sy - 8, "？", C_TEXT, C_BG);
+    else if (eq(e, "surprised")) font_text(font, cv, sx, sy - 8, "！", C_TEXT, C_BG);
     else if (eq(e, "love") || (eq(e, "happy") && f->bond >= 85)) {
         int hy = sy - 4 - (int)lround(3 * sin(t * 2 * M_PI / 1.1));
         disc(cv, sx - 4, hy, 4, C_HEART); disc(cv, sx + 3, hy, 4, C_HEART);
         line(cv, sx - 8, hy + 1, sx, hy + 9, 2, C_HEART); line(cv, sx + 7, hy + 1, sx, hy + 9, 2, C_HEART);
     } else if (eq(e, "tired")) {
-        ellipse(cv, cx + R - 8, cy - R / 3, 3, 5, C_SWEAT);
+        ellipse(cv, cx + R - 6, cy - R / 3, 3, 5, C_SWEAT);
     } else if (asleep) {
         int k = (int)(now / 700) % 3;
-        for (int i = 0; i <= k; i++) font_text(font, cv, sx + i * 10, sy - 10 - i * 12, "z", C_Z, 0x1A2230);
-    } else if (eq(e, "happy") && f->mood > 60) font_text(font, cv, sx, sy - 8, "♪", C_TEXT, 0x1A2230);
+        for (int i = 0; i <= k; i++) font_text(font, cv, sx + i * 10, sy - 10 - i * 12, "z", C_Z, C_BG);
+    } else if (eq(e, "happy") && f->mood > 60) font_text(font, cv, sx, sy - 8, "♪", C_TEXT, C_BG);
 
     /* the word under the face */
     snprintf(f->label, sizeof f->label, "%s", talking ? "はなしてる" : label_of(e));
@@ -350,5 +443,5 @@ void face_draw(struct face *f, struct canvas *cv, const struct font *font, int x
     char text[64];
     snprintf(text, sizeof text, "%s ・ %s", f->label, bn);
     int tw = font_text_width(font, text);
-    font_text(font, cv, x + (FACE_W - tw) / 2, y + FACE_H - 22, text, C_TEXT, 0x1A2230);
+    font_text(font, cv, x + (FACE_W - tw) / 2, y + FACE_H - 22, text, C_TEXT, C_BG);
 }
