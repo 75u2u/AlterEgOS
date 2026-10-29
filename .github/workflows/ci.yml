@@ -150,7 +150,7 @@ jobs:
           grep -q '^私はかんじ$' "$state/utterances.txt"
           grep -q '4 回話した' "$state/personality.txt"
           python3 scripts/ppm2png.py "$state/shot.ppm" screenshot.png
-      - name: Screen smoke test (the browser window: a page, a link followed by number, colors in the terminal)
+      - name: Screen smoke test (the browser window shows a page, follows a link by number, colors reach the terminal)
         run: |
           state=$(mktemp -d)
           ALTEREGO_HEADLESS=1024x768 ALTEREGO_SNAPSHOT="$state/shot.ppm" ALTEREGO_DUMP="$state/windows.txt" \
