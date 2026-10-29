@@ -1,14 +1,17 @@
 /* Host-side checks for the screen's pieces that need no framebuffer:
  * the terminal emulator, romaji-to-kana, and the font file. */
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "canvas.h"
 #include "dict.h"
 #include "font.h"
 #include "ime.h"
 #include "kana.h"
+#include "paint.h"
 #include "term.h"
 
 static int fails;
@@ -209,10 +212,63 @@ static void test_dict(const char *path)
     dict_free(&d);
 }
 
+static void test_paint(const char *fontpath)
+{
+    struct font f;
+    if (font_load(&f, fontpath) < 0) { CHECK(0, "paint: no font"); return; }
+    struct paint p;
+    CHECK(paint_init(&p, 600, 100) == 0, "paint init");   /* wide enough for the whole toolbar */
+    CHECK(paint_pixel(&p, 50, 50) == 0xFFFFFF, "paper is white");
+    /* a stroke in the default black, medium brush, below the toolbar */
+    paint_press(&p, &f, 20, PAINT_TB_H + 20, NULL);
+    paint_move(&p, 60, PAINT_TB_H + 20);
+    paint_release(&p);
+    CHECK(paint_pixel(&p, 40, 20) == 0x000000 && paint_pixel(&p, 40, 22) == 0x000000, "stroke drawn");
+    CHECK(paint_pixel(&p, 40, 30) == 0xFFFFFF, "brush stays narrow");
+    CHECK(p.strokes == 1 && !p.drawing, "one stroke, released");
+    /* the third palette square (red), then a dot */
+    paint_press(&p, &f, 6 + 2 * 20 + 5, 10, NULL);
+    CHECK(p.color == paint_palette[2] && !p.drawing, "palette click picks red, draws nothing");
+    paint_press(&p, &f, 100, PAINT_TB_H + 50, NULL);
+    paint_release(&p);
+    CHECK(paint_pixel(&p, 100, 50) == paint_palette[2], "red dot");
+    /* the eraser over the first stroke */
+    int ex = 0;
+    { /* find the eraser button: the first toolbar hit that switches the tool */
+        for (int x = 300; x < 600 && p.tool != PT_ERASER; x += 2) { paint_press(&p, &f, x, 10, NULL); ex = x; }
+    }
+    CHECK(p.tool == PT_ERASER, "eraser found at x=%d", ex);
+    paint_press(&p, &f, 40, PAINT_TB_H + 20, NULL);
+    paint_release(&p);
+    CHECK(paint_pixel(&p, 40, 20) == 0xFFFFFF, "erased");
+    /* save, then clear */
+    char dir[] = "/tmp/alterego-paint-XXXXXX";
+    CHECK(mkdtemp(dir) != NULL, "mkdtemp");
+    CHECK(paint_save(&p, dir) == 0 && strstr(p.msg, "保存した: ") == p.msg, "save '%s'", p.msg);
+    char path[256];
+    snprintf(path, sizeof path, "%s", p.msg + strlen("保存した: "));
+    FILE *pf = fopen(path, "rb");
+    CHECK(pf != NULL, "saved file exists");
+    if (pf) { char hdr[16] = ""; if (fgets(hdr, sizeof hdr, pf)) CHECK(strcmp(hdr, "P6\n") == 0, "ppm header '%s'", hdr); fclose(pf); remove(path); }
+    rmdir(dir);
+    paint_clear(&p);
+    CHECK(paint_pixel(&p, 100, 50) == 0xFFFFFF && p.strokes == 0, "cleared");
+    /* draws without touching pixels outside its box */
+    struct canvas c;
+    canvas_init(&c, 300, 200);
+    canvas_fill(&c, 0, 0, 300, 200, 0x123456);
+    paint_draw(&p, &c, &f, 10, 10);
+    CHECK(c.px[5 * 300 + 5] == 0x123456 && c.px[(10 + PAINT_TB_H + 5) * 300 + 15] == 0xFFFFFF, "drawn in place");
+    canvas_free(&c);
+    paint_free(&p);
+    font_free(&f);
+}
+
 int main(int argc, char **argv)
 {
     test_kana();
     test_term();
+    test_paint(argc > 1 ? argv[1] : "font.hex");
     test_font(argc > 1 ? argv[1] : "font.hex");
     test_dict(argc > 2 ? argv[2] : "dict.txt");
     if (fails) { fprintf(stderr, "%d check(s) failed\n", fails); return 1; }

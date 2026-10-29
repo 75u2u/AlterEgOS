@@ -105,7 +105,7 @@ jobs:
           # and so does the next run
           out=$(printf 'おはよう\nexit\n' | run)
           echo "$out" | grep -q 'AlterEgo: はじめまして。まだ、なにも知りません'
-      - name: Screen checks (terminal emulator, romaji to kana, kanji dictionary and conversion, font)
+      - name: Screen checks (terminal emulator, romaji to kana, paint, kanji dictionary and conversion, font)
         run: make -C src/screen test
       - name: Browser checks (URL resolution, HTML to text, layout)
         run: make -C src/web test
@@ -164,6 +164,18 @@ jobs:
           grep -q '^second page back\[1\]' "$state/windows.txt"           # link [1] of index.html is sub/page.html
           grep -q 'サブページ - file:.*/sub/page.html' "$state/windows.txt"
           python3 scripts/ppm2png.py "$state/shot.ppm" screenshot-browser.png
+      - name: Screen smoke test (the メニュー and the paint window)
+        run: |
+          state=$(mktemp -d)
+          ALTEREGO_HEADLESS=1024x768 ALTEREGO_SNAPSHOT="$state/shot.ppm" ALTEREGO_DUMP="$state/windows.txt" \
+          ALTEREGO_SCRIPT=$'\n' ALTEREGO_SCRIPT_WIN=paint ALTEREGO_SCRIPT_MENU=1 \
+          ALTEREGO_FONT=src/screen/font.hex ALTEREGO_DICT=src/screen/dict.txt \
+          ALTEREGO_AGENT="$PWD/src/agent/alterego" ALTEREGO_SHELL=/bin/sh ALTEREGO_WEB="$PWD/src/web/alterego-web" \
+          ALTEREGO_STATE="$state" ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml \
+          timeout 60 ./src/screen/alterego-screen
+          grep -q '^== ペイント' "$state/windows.txt"
+          grep -q '^(paint 640x400, 0 strokes)' "$state/windows.txt"
+          python3 scripts/ppm2png.py "$state/shot.ppm" screenshot-paint.png
       - name: Upload the desktop screenshots
         uses: actions/upload-artifact@v4
         with:
@@ -171,6 +183,7 @@ jobs:
           path: |
             screenshot.png
             screenshot-browser.png
+            screenshot-paint.png
       - name: Init refuses to run outside PID 1
         run: |
           if ./src/init/alteregos-init; then echo "init should have refused"; exit 1; fi
