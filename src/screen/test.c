@@ -452,20 +452,15 @@ static void test_face(const char *fontpath)
     for (int y = 0; y < cv.h; y++) for (int x = 0; x < cv.w; x++)
         if ((x < 10 || y < 10 || x >= 10 + FACE_W || y >= 10 + FACE_H) && cv.px[(size_t)y * cv.w + x] != 0x123456) outside++;
     CHECK(outside == 0, "%d pixels outside the box", outside);
-    /* the look is chosen: model 1 is the maid android, skin in the middle instead of a screen */
+    /* the intercom's lamp on the left: the age's colour, white while talking; nothing sticks out on the right */
     canvas_fill(&cv, 0, 0, cv.w, cv.h, 0x123456);
-    face_set(&fc, "mood=0;bond=0;stage=0;body=0;model=1;expr=;say=0", now);
-    face_draw(&fc, &cv, &f, 10, 10, now);
-    CHECK(fc.model == 1 && cv.px[(size_t)(10 + 100) * cv.w + 10 + FACE_W / 2] == 0xFFEFE4, "the maid's skin at the centre: %06x", cv.px[(size_t)(10 + 100) * cv.w + 10 + FACE_W / 2]);
-    outside = 0;
-    for (int y = 0; y < cv.h; y++) for (int x = 0; x < cv.w; x++)
-        if ((x < 10 || y < 10 || x >= 10 + FACE_W || y >= 10 + FACE_H) && cv.px[(size_t)y * cv.w + x] != 0x123456) outside++;
-    CHECK(outside == 0, "maid: %d pixels outside the box", outside);
-    face_set(&fc, "mood=0;bond=0;stage=0;body=0;model=7;expr=;say=0", now);
-    CHECK(fc.model == 1, "model clamped: %d", fc.model);
-    face_set(&fc, "mood=0;bond=0;stage=0;body=0;model=0;expr=;say=0", now);
-    face_draw(&fc, &cv, &f, 10, 10, now);
-    CHECK(cv.px[(size_t)(10 + 100) * cv.w + 10 + FACE_W / 2] == 0x1B2535, "the robot's screen at the centre");
+    face_set(&fc, "mood=0;bond=0;stage=0;body=0;expr=;say=0", now + 20000);     /* long after any talking */
+    face_draw(&fc, &cv, &f, 10, 10, now + 20000);
+    CHECK(cv.px[(size_t)(10 + 100) * cv.w + 10 + 55] == 0xBFC8D6, "the intercom lamp: %06x", cv.px[(size_t)(10 + 100) * cv.w + 10 + 55]);
+    CHECK(cv.px[(size_t)(10 + 100) * cv.w + 10 + 196] == 0x123456, "no ears: %06x", cv.px[(size_t)(10 + 100) * cv.w + 10 + 196]);
+    face_set(&fc, "mood=0;bond=0;stage=0;body=0;expr=;say=50", now + 20000);
+    face_draw(&fc, &cv, &f, 10, 10, now + 20000);
+    CHECK(cv.px[(size_t)(10 + 100) * cv.w + 10 + 55] == 0xC8FAFF, "the lamp while talking: %06x", cv.px[(size_t)(10 + 100) * cv.w + 10 + 55]);
     canvas_free(&cv);
     font_free(&f);
 }

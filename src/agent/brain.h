@@ -76,10 +76,6 @@ void brain_memories(const struct brain *b, const struct persona *p, char *out, s
  * short-lived mood (-100..100). Both grow out of the conversation and are
  * shown in the status. */
 int  brain_intimacy(const struct brain *b);
-/* The look it shows on the screen (0 robot, 1 maid android): the user's
- * choice (「メイドになって」), kept in bond.txt. 1 when `line` was about it. */
-int  brain_model(const struct brain *b);
-int  brain_model_request(struct brain *b, const char *line, char *out, size_t cap);
 int  brain_mood(const struct brain *b);
 const char *brain_intimacy_word(const struct brain *b);
 /* Something it says on its own into a silence (a question, a topic);

@@ -93,7 +93,6 @@ struct brain {
     char answer[96];
     char adopted[96];               /* a like of the user it just made its own */
     int sessions;                   /* boots with this memory, this one included */
-    int model;                      /* the look on the screen the user chose: 0 robot, 1 maid android (bond.txt) */
     long absence_s;                 /* seconds since it was last talked to, at this boot */
     int idle_count;                 /* times it spoke up into silence */
     int last_q;                     /* nutt when it last asked something */
@@ -1658,42 +1657,6 @@ static void add_mood(struct brain *b, int d)
 }
 
 int brain_intimacy(const struct brain *b) { return b->intimacy; }
-int brain_model(const struct brain *b) { return b->model; }
-
-/* 「メイドになって」「ロボットに戻って」「姿を変えて」「どんな姿が選べる？」:
- * the look it shows on the screen is the user's choice. 1 when handled. */
-int brain_model_request(struct brain *b, const char *line, char *out, size_t cap)
-{
-    static const char *const name_ja[] = { "ロボット", "メイド" }, *const name_en[] = { "the robot", "the maid" };
-    char lo[512];
-    snprintf(lo, sizeof lo, "%s", line);
-    lower_ascii(lo);
-    int en = brain_detect_lang(line, b->lang) == BRAIN_EN;
-    int maid = has(line, "メイド") || has(line, "めいど") || has(lo, "maid");
-    int robot = has(line, "ロボット") || has(line, "ろぼっと") || has(lo, "robot");
-    int change = has(line, "になって") || has(line, "にして") || has(line, "に戻って") || has(line, "にもどって") || has(line, "の姿") || has(line, "のすがた") ||
-                 has(line, "に変身") || has(line, "にへんしん") || has(lo, "be a ") || has(lo, "be the ") || has(lo, "become") || has(lo, "turn into") || has(lo, " mode") || has(lo, "look like");
-    int want;
-    if (maid && !robot && change) want = 1;
-    else if (robot && !maid && change) want = 0;
-    else if (has(line, "姿を変えて") || has(line, "すがたをかえて") || has(line, "姿を変えろ") || has(lo, "change your look") || has(lo, "switch your look") || has(lo, "change model") || has(lo, "switch model")) want = !b->model;
-    else if ((has(line, "姿") || has(line, "すがた") || has(lo, "your look") || has(lo, "which model") || has(lo, "what model")) &&
-             (has(line, "？") || has(line, "?") || has(line, "どんな") || has(line, "選べる") || has(line, "えらべる") || has(lo, "what") || has(lo, "which"))) {
-        snprintf(out, cap, en ? "Right now I look like %s. I can be the robot or the maid (an android with cat ears and a headset): say \"be the maid\" or \"be the robot\"."
-                              : "いまの姿は%s。選べるのはロボットとメイド(猫耳とインカムのアンドロイド)。「メイドになって」「ロボットになって」で変わるよ。",
-                 en ? name_en[b->model] : name_ja[b->model]);
-        return 1;
-    } else return 0;
-    if (want == b->model) {
-        snprintf(out, cap, en ? "I am already %s." : "もう%sの姿だよ。", en ? name_en[want] : name_ja[want]);
-        return 1;
-    }
-    b->model = want;
-    snprintf(b->expr, sizeof b->expr, "happy");
-    if (want == 1) snprintf(out, cap, en ? "I'll be the maid now. Cat ears and a headset, do they suit me?" : "メイドの姿になるね。猫耳とインカム、似合うかな。");
-    else snprintf(out, cap, en ? "Back to the robot look." : "ロボットの姿に戻るね。");
-    return 1;
-}
 int brain_mood(const struct brain *b) { return b->mood; }
 
 static int intimacy_level(const struct brain *b)
@@ -2030,7 +1993,6 @@ void brain_bond_load(struct brain *b, const char *text, long now)
         else if (starts(line, "pending=")) { int q = atoi(line + 8); b->pending_q = q >= 0 && q < Q_COUNT ? q : -1; }
         else if (starts(line, "idle=")) b->idle_count = atoi(line + 5);
         else if (starts(line, "lastq=")) b->last_q = atoi(line + 6);
-        else if (starts(line, "model=")) b->model = atoi(line + 6) == 1;
         else if (starts(line, "user_name=") && !b->user_name[0]) set_name(b->user_name, line + 10);   /* names given on request are not in the log */
         else if (starts(line, "own_name=") && !b->own_name[0]) set_name(b->own_name, line + 9);
         else if (starts(line, "fact\t")) {
@@ -2047,8 +2009,8 @@ void brain_bond_load(struct brain *b, const char *text, long now)
 
 void brain_bond_save(const struct brain *b, long now, char *out, size_t cap)
 {
-    size_t o = (size_t)snprintf(out, cap, "sessions=%d\nlast_seen=%ld\nintimacy=%d\nmood=%d\nasked=%x\npending=%d\nidle=%d\nlastq=%d\nmodel=%d\nuser_name=%s\nown_name=%s\n",
-                                b->sessions, now, b->intimacy, b->mood, b->asked_q, b->pending_q, b->idle_count, b->last_q, b->model, b->user_name, b->own_name);
+    size_t o = (size_t)snprintf(out, cap, "sessions=%d\nlast_seen=%ld\nintimacy=%d\nmood=%d\nasked=%x\npending=%d\nidle=%d\nlastq=%d\nuser_name=%s\nown_name=%s\n",
+                                b->sessions, now, b->intimacy, b->mood, b->asked_q, b->pending_q, b->idle_count, b->last_q, b->user_name, b->own_name);
     for (int i = 0; i < b->nfacts && o < cap; i++) {
         if (!b->facts[i].kept) continue;
         int w = snprintf(out + o, cap - o, "fact\t%s\t%s\n", b->facts[i].kind, b->facts[i].text);

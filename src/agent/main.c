@@ -79,8 +79,8 @@ static int g_body_level;                     /* the latest body reading, for the
 static const char *face_osc(struct brain *b, const char *said, char *buf, size_t cap)
 {
     if (!getenv("ALTEREGO_SCREEN")) return "";
-    snprintf(buf, cap, "\x1b]7700;face;mood=%d;bond=%d;stage=%d;body=%d;model=%d;expr=%s;say=%zu\x1b\\",
-             brain_mood(b), brain_intimacy(b), brain_stage(b), g_body_level, brain_model(b), brain_expression(b), utf8_count(said));
+    snprintf(buf, cap, "\x1b]7700;face;mood=%d;bond=%d;stage=%d;body=%d;expr=%s;say=%zu\x1b\\",
+             brain_mood(b), brain_intimacy(b), brain_stage(b), g_body_level, brain_expression(b), utf8_count(said));
     return buf;
 }
 
@@ -318,12 +318,6 @@ int main(void)
             brain_set_body(b, body.level);
             g_body_level = body.level;
             body_report(&body, brain_detect_lang(line, brain_lang(b)) == BRAIN_EN, reply, sizeof reply);
-            say(b, &p, reply);
-            continue;
-        }
-        /* 「メイドになって」: the look on the screen is chosen, not learned */
-        if (brain_model_request(b, line, reply, sizeof reply)) {
-            if (store) save_self(b, &p);
             say(b, &p, reply);
             continue;
         }

@@ -327,18 +327,12 @@ jobs:
           run_face $'konnnichiha\neraine!\n'
           cat "$state/dump.txt"
           grep -q '^== AlterEgo の顔$' "$state/dump.txt"
-          grep -q '^(face stage=0 mood=[0-9]* bond=[0-9]* body=0 model=0 expr=happy label=うれしい)$' "$state/dump.txt"
+          grep -q '^(face stage=0 mood=[0-9]* bond=[0-9]* body=0 expr=happy label=うれしい)$' "$state/dump.txt"
           python3 scripts/ppm2png.py "$state/face.ppm" screenshot-face.png
           # a word it does not know: puzzled; the stage comes from the agent too
           run_face $'ringotte nani?\n'
           cat "$state/dump.txt"
-          grep -q '^(face stage=0 mood=[-0-9]* bond=[0-9]* body=0 model=0 expr=puzzled label=？)$' "$state/dump.txt"
-          # the look is the user's choice: 「メイドになって」 turns the face into the maid android, and it is remembered
-          run_face $'meidoninatte\n'
-          cat "$state/dump.txt"
-          grep -q '^(face stage=0 mood=[-0-9]* bond=[0-9]* body=0 model=1 expr=happy label=うれしい)$' "$state/dump.txt"
-          grep -q '^model=1$' "$state/bond.txt"
-          python3 scripts/ppm2png.py "$state/face.ppm" screenshot-maid.png
+          grep -q '^(face stage=0 mood=[-0-9]* bond=[0-9]* body=0 expr=puzzled label=？)$' "$state/dump.txt"
       - name: Screen smoke test (the メニュー and the paint window)
         run: |
           state=$(mktemp -d)
@@ -432,7 +426,6 @@ jobs:
             screenshot.png
             screenshot-browser.png
             screenshot-face.png
-            screenshot-maid.png
             screenshot-paint.png
             screenshot-show.png
             screenshot-draw.png
