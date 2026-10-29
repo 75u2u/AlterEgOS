@@ -107,8 +107,8 @@ static const char *key_text(struct input *in, int code, char *buf, size_t cap)
     case KEY_ESC: return "\x1b";
     case KEY_UP: return "\x1b[A";
     case KEY_DOWN: return "\x1b[B";
-    case KEY_RIGHT: return "\x1b[C";
-    case KEY_LEFT: return "\x1b[D";
+    case KEY_RIGHT: return in->shift ? "\x1b[1;2C" : "\x1b[C";
+    case KEY_LEFT: return in->shift ? "\x1b[1;2D" : "\x1b[D";
     case KEY_HOME: return "\x1b[H";
     case KEY_END: return "\x1b[F";
     case KEY_DELETE: return "\x1b[3~";

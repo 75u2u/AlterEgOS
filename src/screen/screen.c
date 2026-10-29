@@ -421,18 +421,23 @@ static void draw_win(int i)
         }
     }
     if (focused && g_kana_mode && ime_active(&g_ime)) {  /* the preedit, at the cursor */
-        char shown[IME_PRE + 64], popup[IME_CANDS * (DICT_CAND + 8)];
-        size_t conv;
+        char shown[IME_PRE * 3 + 64], popup[IME_CANDS * (DICT_CAND + 8)];
+        size_t sel_off, sel_len;
         int cur;
-        ime_shown(&g_ime, shown, sizeof shown, &conv);
+        ime_shown(&g_ime, shown, sizeof shown, &sel_off, &sel_len);
         int px = ox + w->term.cx * FONT_W, py = oy + w->term.cy * FONT_H;
         int ex = px;
-        if (conv) {                                      /* the candidate, highlighted */
-            char head[IME_PRE];
-            snprintf(head, sizeof head, "%.*s", (int)conv, shown);
-            ex = font_text(&g_font, &g_cv, px, py, head, C_WINBG, C_CONV);
+        if (sel_off) {                                   /* segments before the current one */
+            char head[IME_PRE * 3];
+            snprintf(head, sizeof head, "%.*s", (int)sel_off, shown);
+            ex = font_text(&g_font, &g_cv, px, py, head, C_PREEDIT, C_WINBG);
         }
-        int ex2 = font_text(&g_font, &g_cv, ex, py, shown + conv, C_PREEDIT, C_WINBG);
+        if (sel_len) {                                   /* the current segment's candidate, highlighted */
+            char head[IME_PRE * 3];
+            snprintf(head, sizeof head, "%.*s", (int)sel_len, shown + sel_off);
+            ex = font_text(&g_font, &g_cv, ex, py, head, C_WINBG, C_CONV);
+        }
+        int ex2 = font_text(&g_font, &g_cv, ex, py, shown + sel_off + sel_len, C_PREEDIT, C_WINBG);
         canvas_hline(&g_cv, px, py + FONT_H - 1, ex2 - px, C_PREEDIT);
         ime_popup(&g_ime, popup, sizeof popup, &cur);
         if (popup[0]) {                                  /* the candidate list, under the cursor */
@@ -757,6 +762,11 @@ int main(void)
     g_mx = g_fb.w / 2;
     g_my = g_fb.h / 2;
     ime_init(&g_ime, g_dict.idx ? &g_dict : NULL);
+    {                                                    /* what the user chooses in conversion, next to the pictures */
+        char learn[560];
+        snprintf(learn, sizeof learn, "%.*s/ime.txt", (int)(strrchr(g_save_dir, '/') - g_save_dir), g_save_dir);
+        ime_set_learning(&g_ime, learn);
+    }
     for (int i = 0; i < WIN_MAX; i++) win_spawn(&g_win[i]);
 
     kmsg("up %dx%d %dbpp on %s, %d glyphs, %d dictionary entries, %d keyboards, %d pointers, agent on pty",
