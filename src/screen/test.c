@@ -85,6 +85,15 @@ static void test_term(void)
     CHECK(strcmp(row, "123456789") == 0, "row0 before wrap '%s'", row);
     term_row(&t, 1, row, sizeof row);
     CHECK(strcmp(row, "か") == 0, "wrapped wide '%s'", row);
+    /* SGR: bold, underline + color, reverse, reset; unknown 38;5;n leaves the default color */
+    feed(&t, "\x1b[2J\x1b[1mA\x1b[0;4;36mB\x1b[7mC\x1b[0mD\x1b[38;5;200;1mE");
+    CHECK(t.cells[0].attr == ATTR_BOLD && t.cells[0].fg == 0, "bold %d %d", t.cells[0].attr, t.cells[0].fg);
+    CHECK(t.cells[1].attr == ATTR_UNDERLINE && t.cells[1].fg == 7, "underline cyan %d %d", t.cells[1].attr, t.cells[1].fg);
+    CHECK(t.cells[2].attr == (ATTR_UNDERLINE | ATTR_REVERSE) && t.cells[2].fg == 7, "reverse %d", t.cells[2].attr);
+    CHECK(t.cells[3].attr == 0 && t.cells[3].fg == 0, "reset %d %d", t.cells[3].attr, t.cells[3].fg);
+    CHECK(t.cells[4].attr == ATTR_BOLD && t.cells[4].fg == 0, "256-color skipped, bold kept %d %d", t.cells[4].attr, t.cells[4].fg);
+    term_row(&t, 0, row, sizeof row);
+    CHECK(strcmp(row, "ABCDE") == 0, "sgr text '%s'", row);
     term_free(&t);
 }
 

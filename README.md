@@ -17,7 +17,8 @@ PID 1 がエージェント「AlterEgo」を起動し、bash も systemd も X �
 ## いまの状態(MVP 3 日目まで)
 
 - `src/init/`: PID 1。擬似 FS のマウント、ホスト名と lo、eth0 と DHCP クライアント(busybox udhcpc)、エージェント(コンソールが画面なら代わりにデスクトップ)と tty2 シェルの起動と再起動、シャットダウン
-- `src/screen/`: 画面。`/dev/fb0` に直接描き、キーボードとマウスは evdev から読む。窓は 2 つ、AlterEgo(チャット)と busybox sh(シェル)で、それぞれ小さな端末エミュレータ + pty。マウスで窓の前後・移動・閉じる、上のバーのボタンで窓を開き直す・かな入力の切り替え・再起動・電源オフ。フォントは東雲 16px(パブリックドメイン、`font.hex`)。日本語入力はローマ字→ひらがな(`kana.c`、大文字で打つとカタカナ)の上に漢字変換(`ime.c` + `dict.c`、辞書は SKK-JISYO.L を `scripts/mkdict.py` で変換した `dict.txt`、約 15 万語、GPL-2.0-or-later)。Space で変換・次の候補、数字で候補を選ぶ、Enter で確定、Backspace で変換をやめる。送りがな(「たべる」→「食べる」)と、文の先頭だけの変換(「わたしは」→「私」+「は」)もできる。切り替えは 半角/全角 キー、Ctrl+Space、またはバーのボタン
+- `src/screen/`: 画面。`/dev/fb0` に直接描き、キーボードとマウスは evdev から読む。窓は 3 つ、AlterEgo(チャット)、busybox sh(シェル)、ブラウザ(上のバーの「ブラウザ」ボタンで開く)で、それぞれ小さな端末エミュレータ + pty(太字・下線・反転・16 色に対応)。マウスで窓の前後・移動・閉じる、上のバーのボタンで窓を開き直す・かな入力の切り替え・再起動・電源オフ。フォントは東雲 16px(パブリックドメイン、`font.hex`)。日本語入力はローマ字→ひらがな(`kana.c`、大文字で打つとカタカナ)の上に漢字変換(`ime.c` + `dict.c`、辞書は SKK-JISYO.L を `scripts/mkdict.py` で変換した `dict.txt`、約 15 万語、GPL-2.0-or-later)。Space で変換・次の候補、数字で候補を選ぶ、Enter で確定、Backspace で変換をやめる。送りがな(「たべる」→「食べる」)と、文の先頭だけの変換(「わたしは」→「私」+「は」)もできる。切り替えは 半角/全角 キー、Ctrl+Space、またはバーのボタン
+- `src/web/`: ブラウザ `alterego-web`。文字だけの自前ブラウザで、JavaScript も CSS も画像も扱わない。HTTP/1.1 クライアント(`net.c`: chunked、リダイレクト 5 回まで、https は mbedTLS で `/etc/ssl/certs/ca-certificates.crt` を使って証明書を検証)、HTML → 文字(`html.c`: 見出しは太字、リストは「・」と番号、表は 2 スペース区切り、画像は alt、リンクは下線つきで `[番号]`、文字実体参照)、端末の幅での折り返し(全角は 2 セル)。キーは `j`/`k`/矢印で 1 行、Space/PageDown/PageUp で 1 ページ、`g`/`G` で上下端、**番号 + Enter でリンクへ**、`o` で URL、`s` で検索(DuckDuckGo)、`b`/`f` で戻る/進む、`r` で読み込み直し、`?` で説明、`q` で終了。`alterego-web --dump URL` はページを文字にして標準出力に出す(スクリプトやテスト用)。UTF-8 のページだけ正しく出る(Shift_JIS や EUC-JP は化ける)。`file:` も開ける
 - `src/agent/`: エージェント。頭は外部のモデルや API に頼らない自前のもの(`brain.c`)で、会話で育てる
   - **言葉**: user の発話から文字 n-gram(1〜3 文字の文脈。英語は単語 n-gram 1〜2 語)と語彙を学び、似た発話を検索して「そのとき user が次に言ったこと」を返したり、n-gram で文を作ったりする。聞く相手は user だけなので、話す言葉も user の言葉になる
   - **性格**: 明るさ・ていねいさ・好奇心・おしゃべり・甘えの 5 軸、生まれたときは全部 0。user の話し方(「！」、です・ます、質問、長い話)と、ほめる(えらい、いい子、好き)・叱る(だめ、違う)で少しずつ動き、返事の言い回しに出る
@@ -30,7 +31,7 @@ PID 1 がエージェント「AlterEgo」を起動し、bash も systemd も X �
   - **OS を動かす手**(`skills.c`): 会話で頼むと OS を操作する。「今何時？」、「/path の中を見せて」「/path を読んで」「/path に「〇〇」と書いて」「/path というファイルを作って」「/path を消して」、「プロセスを見せて」「メモリとディスクは？」、「実行して: コマンド」(busybox sh で実行して結果を返す)、「再起動して」「電源を切って」。root で動き、確認はしない(設計どおり)。やったことは全部 `actions.log` に残り、「何をした？」で読める
   - **会話で機能が増える**: 「『〇〇』と言ったら『△△』を実行して」で新しいできることを覚える(△△は shell コマンドでも、上の既存のできることでもよい)。以後「〇〇」の一言で動き、「できること」の一覧に並び、「〇〇を忘れて」で消える。覚えたものは `skills.txt` に残るので再起動後も使える。同じコマンドを 2 回頼むと、名前をつけて覚えようかと言ってくる
 - 保存先は、起動した USB/ディスクの EFI パーティションの `alterego/`(発話のログ `utterances.txt`、育ち具合・性格・記憶を書いた `personality.txt`、覚えたできること `skills.txt`、行動の記録 `actions.log`)。起動時にログから頭を作り直すので、再起動後も続きから。QEMU の `-kernel` 起動には EFI パーティションが無いので、`run-qemu.sh` が `build/<arch>/state.img`(64MB、先頭に `ALTEREGO-STATE` の印だけ)を作って 2 つ目のディスクとして挿し、エージェントが初回に FAT でフォーマットして `alterego/` を置く(印の無いディスクは決してフォーマットしない)
-- `buildroot/`: Buildroot の外部ツリー。x86_64 / aarch64 の defconfig、カーネル設定の断片、rootfs のオーバーレイ
+- `buildroot/`: Buildroot の外部ツリー。x86_64 / aarch64 の defconfig、カーネル設定の断片、rootfs のオーバーレイ。ブラウザのために mbedtls と ca-certificates が入る
 
 ## 使ってみる(ビルドせずに)
 
@@ -110,10 +111,12 @@ scripts/build.sh x86_64 menuconfig          # Buildroot の設定を変える(de
 **5. Buildroot なしで、ホストでそのまま動かす**(エージェントと画面の部品だけ試すとき)
 
 ```sh
-make host                      # src/init src/agent src/screen をホストの gcc でコンパイル
+make host                      # src/init src/agent src/screen src/web をホストの gcc でコンパイル(https には libmbedtls-dev)
 ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml ./src/agent/alterego   # 端末で会話
 make check                     # CI と同じコンパイル検査(-Werror、aarch64 クロスがあればそれも)
 make -C src/screen test        # 画面の部品(端末エミュレータ、ローマ字かな変換、フォント)の検査
+make -C src/web test           # ブラウザの部品(URL の解決、HTML → 文字、折り返し)の検査
+./src/web/alterego-web https://ja.wikipedia.org/   # ブラウザをこの端末で使う(--dump URL で文字にして出すだけ)
 ```
 
 画面プログラムは `ALTEREGO_HEADLESS=1024x768 ALTEREGO_SNAPSHOT=shot.ppm ALTEREGO_SCRIPT=$'konnnichiha\n' ALTEREGO_SCRIPT_KANA=1 ./src/screen/alterego-screen` で
@@ -189,8 +192,9 @@ x86_64 は `image` ワークフローの中で、QEMU の `-kernel` 起動(記�
 src/init/        PID 1(C、静的リンク)
 src/agent/       エージェント(C、静的リンク): 頭 brain.c、OS を動かす手 skills.c、体調 body.c、保存 store.c
 src/screen/      画面: フレームバッファのデスクトップ、端末エミュレータ、evdev 入力、ローマ字かな変換、漢字変換(SKK 辞書)、フォント
+src/web/         ブラウザ(C、静的リンク + mbedTLS): HTTP クライアント net.c、HTML → 文字 html.c、URL url.c、端末 UI main.c
 buildroot/       BR2_EXTERNAL ツリー(configs/、board/alteregos/、package/alteregos/)
-scripts/         build.sh、run-qemu.sh、boot-test.sh、boot-test-efi.sh、mkfont.py、mkdict.py、ppm2png.py
+scripts/         build.sh、run-qemu.sh、boot-test.sh、boot-test-efi.sh、mkfont.py、mkdict.py、ppm2png.py、web-test/(ブラウザのテストサーバーと pty 操作)
 build/           Buildroot 本体と成果物(git 管理外)
 ```
 
@@ -202,3 +206,4 @@ build/           Buildroot 本体と成果物(git 管理外)
 4. ~~exec の道具と監査ログ~~(会話で OS を操作する手と `actions.log`、会話で増えるできること `skills.txt` が入った)。生のシステムコールを呼ぶ道具と、自分で道具を書いて build する仕組みは続く
 5. btrfs スナップショットと「戻して」、tty2 の退路。通しで使ってみる
 6. ~~画面: フレームバッファのデスクトップにチャットとシェルの窓、マウス操作、ローマ字かな入力、漢字変換~~(スクロールバック、画面サイズに合わせた窓のリサイズ、文節ごとの変換と学習は続く)
+7. ~~ブラウザ: 文字だけの自前ブラウザをプリインストール~~(フォーム送信、Shift_JIS、会話から「〇〇を開いて」で窓に出すのは続く)

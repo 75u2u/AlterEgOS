@@ -14,8 +14,9 @@
 # Without --gui the agent talks on the serial line, so the test also talks
 # back: it attaches a marked memory disk (the way run-qemu.sh does), says
 # 「こんにちは」, expects the newborn's echo and the kernel-log line that the
-# disk was formatted, then boots a second time and expects AlterEgo to
-# remember the conversation (it greets 「……user？」 instead of 「はじめまして」).
+# disk was formatted, then boots a second time, expects AlterEgo to
+# remember the conversation (it greets 「……user？」 instead of 「はじめまして」)
+# and asks it to run the installed browser (実行して: alterego-web --dump).
 #
 # Exit 0 when the expected lines appear, 1 otherwise; the full console log is
 # left in build/<arch>/boot.log (boot-gui.log for --gui, boot2.log for the
@@ -116,8 +117,9 @@ else
     fi
     if [ "$ok" = 0 ]; then
         LABEL="$ARCH, second boot"
-        boot "$WANT_INIT" 'AlterEgo: ……user？' "" "" "$REPO/build/$ARCH/boot2.log"
-        [ "$ok" = 0 ] && LABEL="$ARCH, memory kept across a reboot"
+        # ... and the installed browser renders its help page (through the agent's 実行して)
+        boot "$WANT_INIT" 'AlterEgo: ……user？' "実行して: alterego-web --dump about:home" 'AlterEgOS のブラウザ' "$REPO/build/$ARCH/boot2.log"
+        [ "$ok" = 0 ] && LABEL="$ARCH, memory kept across a reboot, browser runs"
     fi
 fi
 

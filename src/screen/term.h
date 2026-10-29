@@ -7,13 +7,18 @@
 /* A small terminal emulator: a grid of code points fed with what a pty
  * master reads. Enough for the agent, busybox sh and its line editing
  * (CR, LF, BS, TAB, and the common CSI sequences); full-width characters
- * occupy two cells. Colors and attributes are parsed and ignored. */
+ * occupy two cells. SGR keeps bold, underline, reverse and the 16 basic
+ * foreground colors (what the browser uses for links and headings); the
+ * rest of the colors and attributes are parsed and ignored. */
 
 enum { CELL_NORMAL = 0, CELL_WIDE = 1, CELL_TAIL = 2 };
+enum { ATTR_BOLD = 1, ATTR_UNDERLINE = 2, ATTR_REVERSE = 4 };
 
 struct cell {
     uint32_t cp;                /* 0 = empty */
     uint8_t kind;
+    uint8_t attr;               /* ATTR_* bits */
+    uint8_t fg;                 /* 0 = default, 1..16 = ANSI color + 1 (30..37, 90..97) */
 };
 
 struct term {
@@ -28,6 +33,7 @@ struct term {
     unsigned char utf[4];       /* a UTF-8 sequence split across reads */
     int utf_len, utf_need;
     int dirty;
+    uint8_t attr, fg;           /* current SGR state for new characters */
 };
 
 int  term_init(struct term *t, int cols, int rows);

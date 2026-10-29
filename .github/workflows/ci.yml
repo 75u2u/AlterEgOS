@@ -13,8 +13,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Install cross compiler
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Install cross compiler and mbedTLS (the browser's https on the host)
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu libmbedtls-dev
       - name: Build (x86_64, host)
         run: make host
       - name: Check (aarch64, cross)
@@ -107,6 +107,32 @@ jobs:
           echo "$out" | grep -q 'AlterEgo: はじめまして。まだ、なにも知りません'
       - name: Screen checks (terminal emulator, romaji to kana, kanji dictionary and conversion, font)
         run: make -C src/screen test
+      - name: Browser checks (URL resolution, HTML to text, layout)
+        run: make -C src/web test
+      - name: Browser smoke test (http and https servers on localhost, redirects, --dump, keys through a pty)
+        run: |
+          ./src/web/alterego-web --help | grep -q 'https: yes'
+          www=$(mktemp -d)
+          cp -r scripts/web-test/www/. "$www/"
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout "$www/key.pem" -out "$www/cert.pem" -days 2 -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+          python3 scripts/web-test/serve.py "$www" 18080 18443 "$www/cert.pem" "$www/key.pem" &
+          sleep 1
+          # plain http: the page as text with numbered links
+          out=$(./src/web/alterego-web --dump -w 60 http://127.0.0.1:18080/)
+          echo "$out"
+          echo "$out" | grep -q '^# テスト ページ$'
+          echo "$out" | grep -q '^これは太字と相対リンク\[1\]、そして絶対リンク\[2\]です。'
+          echo "$out" | grep -q '^\[1\] http://127.0.0.1:18080/sub/page.html$'
+          echo "$out" | grep -q '^・みかん 上へ\[3\]$'
+          # a redirect is followed, a chunked body is decoded
+          ./src/web/alterego-web --dump http://127.0.0.1:18080/redirect | grep -q 'サブページ'
+          ./src/web/alterego-web --dump http://127.0.0.1:18080/chunked | grep -q '^chunked body ok$'
+          # https: verified against the test CA; refused against the system CAs
+          ALTEREGO_CA="$www/cert.pem" ./src/web/alterego-web --dump https://localhost:18443/ | grep -q '^# テスト ページ$'
+          if ./src/web/alterego-web --dump https://localhost:18443/ 2>err.txt; then echo "untrusted certificate was accepted"; exit 1; fi
+          grep -q '証明書を信頼できません' err.txt
+          # the interactive UI in a pty: the page, a link by number, back, a URL typed after o
+          python3 scripts/web-test/drive.py ./src/web/alterego-web http://127.0.0.1:18080/
       - name: Screen smoke test (headless desktop, typed kana and converted kanji reach the agent)
         run: |
           state=$(mktemp -d)
@@ -114,7 +140,7 @@ jobs:
           ALTEREGO_HEADLESS=1024x768 ALTEREGO_SNAPSHOT="$state/shot.ppm" \
           ALTEREGO_SCRIPT=$'konnnichiha\nkyouhatsukaretanaa\nkannji \n\nwatashihakanji \n\nsute-tasu\n' ALTEREGO_SCRIPT_KANA=1 \
           ALTEREGO_FONT=src/screen/font.hex ALTEREGO_DICT=src/screen/dict.txt \
-          ALTEREGO_AGENT="$PWD/src/agent/alterego" ALTEREGO_SHELL=/bin/sh \
+          ALTEREGO_AGENT="$PWD/src/agent/alterego" ALTEREGO_SHELL=/bin/sh ALTEREGO_WEB="$PWD/src/web/alterego-web" \
           ALTEREGO_STATE="$state" ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml \
           timeout 60 ./src/screen/alterego-screen
           cat "$state/utterances.txt"
@@ -124,11 +150,27 @@ jobs:
           grep -q '^私はかんじ$' "$state/utterances.txt"
           grep -q '4 回話した' "$state/personality.txt"
           python3 scripts/ppm2png.py "$state/shot.ppm" screenshot.png
-      - name: Upload the desktop screenshot
+      - name: Screen smoke test (the browser window: a page, a link followed by number, colors in the terminal)
+        run: |
+          state=$(mktemp -d)
+          ALTEREGO_HEADLESS=1024x768 ALTEREGO_SNAPSHOT="$state/shot.ppm" ALTEREGO_DUMP="$state/windows.txt" \
+          ALTEREGO_SCRIPT=$'1\n' ALTEREGO_SCRIPT_WIN=web ALTEREGO_HOME="file:$PWD/scripts/web-test/www/index.html" \
+          ALTEREGO_FONT=src/screen/font.hex ALTEREGO_DICT=src/screen/dict.txt \
+          ALTEREGO_AGENT="$PWD/src/agent/alterego" ALTEREGO_SHELL=/bin/sh ALTEREGO_WEB="$PWD/src/web/alterego-web" \
+          ALTEREGO_STATE="$state" ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml \
+          timeout 60 ./src/screen/alterego-screen
+          cat "$state/windows.txt"
+          grep -q '^== ブラウザ' "$state/windows.txt"
+          grep -q '^second page back\[1\]' "$state/windows.txt"           # link [1] of index.html is sub/page.html
+          grep -q 'サブページ - file:.*/sub/page.html' "$state/windows.txt"
+          python3 scripts/ppm2png.py "$state/shot.ppm" screenshot-browser.png
+      - name: Upload the desktop screenshots
         uses: actions/upload-artifact@v4
         with:
           name: screenshot
-          path: screenshot.png
+          path: |
+            screenshot.png
+            screenshot-browser.png
       - name: Init refuses to run outside PID 1
         run: |
           if ./src/init/alteregos-init; then echo "init should have refused"; exit 1; fi

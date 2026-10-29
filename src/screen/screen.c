@@ -2,10 +2,11 @@
  * AlterEgOS screen: the desktop.
  *
  * Draws straight onto the framebuffer and reads keyboards and mice from
- * evdev; no X, no Wayland, no toolkit. Two windows, each a small terminal
- * on its own pty: AlterEgo (the agent, chat) and a shell (busybox sh, the
- * escape hatch). Windows are raised, focused, moved and closed with the
- * mouse; the bar at the top has buttons to reopen them, to switch the
+ * evdev; no X, no Wayland, no toolkit. Three windows, each a small
+ * terminal on its own pty: AlterEgo (the agent, chat), a shell (busybox
+ * sh, the escape hatch) and the browser (alterego-web, hidden until its
+ * button is pressed). Windows are raised, focused, moved and closed with
+ * the mouse; the bar at the top has buttons to reopen them, to switch the
  * Japanese input (romaji to kana, Space for kanji) on and off, and to
  * reboot or power off (PID 1 does the actual work when signalled).
  *
@@ -45,7 +46,7 @@
 #define BAR_H     24
 #define TITLE_H   20
 #define PAD       4
-#define WIN_MAX   2
+#define WIN_MAX   3
 
 #define C_DESK    0x1E2430
 #define C_BAR     0x2B3340
@@ -61,8 +62,14 @@
 #define C_CONV    0x7FD8FF
 #define C_POPUP   0x2B3340
 #define C_CURSOR  0xE6E6E6
+#define C_BOLD    0xFFFFFF
 
-enum { W_CHAT = 0, W_SHELL = 1 };
+/* The 16 ANSI colors, as cell.fg 1..16. */
+static const uint32_t g_ansi[16] = {
+    0x3A4250, 0xE06C75, 0x98C379, 0xE5C07B, 0x61AFEF, 0xC678DD, 0x56B6C2, 0xD0D0D0,
+    0x7F8894, 0xFF8A94, 0xB5E890, 0xFFD866, 0x7FC8FF, 0xE0A0FF, 0x7FE0E8, 0xFFFFFF };
+
+enum { W_CHAT = 0, W_SHELL = 1, W_WEB = 2 };
 
 struct win {
     const char *title;
@@ -76,7 +83,7 @@ struct win {
 };
 
 struct button { int x, y, w, h; int action; };
-enum { A_NONE, A_CHAT, A_SHELL, A_KANA, A_REBOOT, A_POWEROFF };
+enum { A_NONE, A_CHAT, A_SHELL, A_WEB, A_KANA, A_REBOOT, A_POWEROFF };
 
 static struct canvas g_cv;
 static struct fb g_fb;
@@ -85,7 +92,7 @@ static struct input g_in;
 static struct dict g_dict;
 static struct ime g_ime;
 static struct win g_win[WIN_MAX];
-static int g_order[WIN_MAX] = { W_SHELL, W_CHAT };     /* bottom to top */
+static int g_order[WIN_MAX] = { W_SHELL, W_WEB, W_CHAT };     /* bottom to top */
 static int g_focus = W_CHAT;
 static int g_kana_mode = 0;
 static int g_mx, g_my;                                  /* mouse pointer */
@@ -138,8 +145,8 @@ static int win_h(const struct win *w) { return TITLE_H + w->rows * FONT_H + 2 * 
 
 static char **child_env(void)
 {
-    static char *env[8];
-    static char persona[256], state[256];
+    static char *env[12];
+    static char persona[256], state[256], home[4200], ca[300];
     int n = 0;
     env[n++] = "PATH=/usr/sbin:/usr/bin:/sbin:/bin";
     env[n++] = "HOME=/root";
@@ -149,6 +156,10 @@ static char **child_env(void)
     if (p) { snprintf(persona, sizeof persona, "ALTEREGO_PERSONA=%s", p); env[n++] = persona; }
     p = getenv("ALTEREGO_STATE");
     if (p) { snprintf(state, sizeof state, "ALTEREGO_STATE=%s", p); env[n++] = state; }
+    p = getenv("ALTEREGO_HOME");                                      /* the browser's first page */
+    if (p) { snprintf(home, sizeof home, "ALTEREGO_HOME=%.4096s", p); env[n++] = home; }
+    p = getenv("ALTEREGO_CA");                                        /* its CA bundle (tests) */
+    if (p) { snprintf(ca, sizeof ca, "ALTEREGO_CA=%.256s", p); env[n++] = ca; }
     env[n] = NULL;
     return env;
 }
@@ -217,6 +228,8 @@ static void draw_bar(void)
     button(x, 3, "AlterEgo", g_focus == W_CHAT && g_win[W_CHAT].visible, A_CHAT);
     x += font_text_width(&g_font, "AlterEgo") + 12 + 6;
     button(x, 3, "シェル", g_focus == W_SHELL && g_win[W_SHELL].visible, A_SHELL);
+    x += font_text_width(&g_font, "シェル") + 12 + 6;
+    button(x, 3, "ブラウザ", g_focus == W_WEB && g_win[W_WEB].visible, A_WEB);
     x += font_text_width(&g_font, "シェル") + 12 + 16;
     button(x, 3, g_kana_mode ? "あ かな入力" : "A 英数入力", g_kana_mode, A_KANA);
 
@@ -258,7 +271,12 @@ static void draw_win(int i)
             if (c->kind == CELL_TAIL) continue;
             int cursor = focused && x == w->term.cx && y == w->term.cy;
             uint32_t cp = c->cp ? c->cp : ' ';
-            font_draw(&g_font, &g_cv, ox + x * FONT_W, oy + y * FONT_H, cp, cursor ? C_WINBG : C_TEXT, cursor ? C_CURSOR : C_WINBG);
+            uint32_t fg = c->fg ? g_ansi[(c->fg - 1) & 15] : (c->attr & ATTR_BOLD) ? C_BOLD : C_TEXT, bg = C_WINBG;
+            if (c->attr & ATTR_REVERSE) { uint32_t tmp = fg; fg = bg; bg = tmp; }
+            if (cursor) { fg = C_WINBG; bg = C_CURSOR; }
+            int px = ox + x * FONT_W, py = oy + y * FONT_H;
+            font_draw(&g_font, &g_cv, px, py, cp, fg, bg);
+            if (c->attr & ATTR_UNDERLINE) canvas_hline(&g_cv, px, py + FONT_H - 1, (c->kind == CELL_WIDE ? 2 : 1) * FONT_W, fg);
         }
     }
     if (focused && g_kana_mode && ime_active(&g_ime)) {  /* the preedit, at the cursor */
@@ -333,6 +351,7 @@ static void action(int a)
     switch (a) {
     case A_CHAT: raise_win(W_CHAT); break;
     case A_SHELL: raise_win(W_SHELL); break;
+    case A_WEB: raise_win(W_WEB); break;
     case A_KANA: {
         char out[IME_PRE + DICT_CAND];
         size_t n = ime_flush(&g_ime, out, sizeof out);
@@ -376,7 +395,7 @@ static void on_key(const struct input_ev *e)
     struct win *w = &g_win[g_focus];
     if (e->type == IN_KEY) {
         if (e->key == KEY_ZENKAKUHANKAKU || e->key == KEY_KATAKANAHIRAGANA || (e->ctrl && e->key == KEY_SPACE)) action(A_KANA);
-        else if (e->alt && e->key == KEY_TAB) raise_win(g_focus == W_CHAT ? W_SHELL : W_CHAT);
+        else if (e->alt && e->key == KEY_TAB) raise_win((g_focus + 1) % WIN_MAX);      /* chat, shell, browser, chat ... */
         return;
     }
     if (!w->visible) { w->visible = 1; g_dirty = 1; }
@@ -457,6 +476,20 @@ static void reap(void)
     }
 }
 
+/* Headless: every window's text, for the tests. */
+static void dump_windows(const char *path)
+{
+    if (!path) return;
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    for (int i = 0; i < WIN_MAX; i++) {
+        fprintf(f, "== %s\n", g_win[i].title);
+        char row[1024];
+        for (int y = 0; y < g_win[i].rows; y++) { term_row(&g_win[i].term, y, row, sizeof row); fprintf(f, "%s\n", row); }
+    }
+    fclose(f);
+}
+
 int main(void)
 {
     const char *fbdev = getenv("ALTEREGO_FB");
@@ -468,7 +501,9 @@ int main(void)
 
     /* Headless (tests, screenshots): ALTEREGO_HEADLESS=WxH draws into memory,
      * ALTEREGO_SNAPSHOT=file.ppm keeps the last frame, ALTEREGO_SCRIPT types
-     * keys into the focused window (\n is Enter) and the program then exits. */
+     * keys into the focused window (\n is Enter; ALTEREGO_SCRIPT_WIN=shell|web
+     * focuses that window first), ALTEREGO_DUMP=file gets every window's text
+     * at the end, and the program then exits. */
     const char *headless = getenv("ALTEREGO_HEADLESS");
     g_snapshot = getenv("ALTEREGO_SNAPSHOT");
     g_script = getenv("ALTEREGO_SCRIPT");
@@ -519,16 +554,28 @@ int main(void)
 
     static char *const chat_argv[] = { "/usr/bin/alterego", NULL };
     static char *const shell_argv[] = { "/bin/sh", NULL };
-    static char agent_path[256], shell_path[256];
-    char *const *ca = chat_argv, *const *sa_ = shell_argv;
-    static char *alt_chat[2], *alt_shell[2];
+    static char *const web_argv[] = { "/usr/bin/alterego-web", NULL };
+    static char agent_path[256], shell_path[256], web_path[256];
+    char *const *ca = chat_argv, *const *sa_ = shell_argv, *const *wa = web_argv;
+    static char *alt_chat[2], *alt_shell[2], *alt_web[2];
     const char *p;
     if ((p = getenv("ALTEREGO_AGENT"))) { snprintf(agent_path, sizeof agent_path, "%s", p); alt_chat[0] = agent_path; ca = alt_chat; }
     if ((p = getenv("ALTEREGO_SHELL"))) { snprintf(shell_path, sizeof shell_path, "%s", p); alt_shell[0] = shell_path; sa_ = alt_shell; }
+    if ((p = getenv("ALTEREGO_WEB"))) { snprintf(web_path, sizeof web_path, "%s", p); alt_web[0] = web_path; wa = alt_web; }
 
     win_init(&g_win[W_CHAT], "AlterEgo", ca, ccols, crows, 16, BAR_H + 12);
     int sw = scols * FONT_W + 2 * PAD + 2, sh = TITLE_H + srows * FONT_H + 2 * PAD + 2;
     win_init(&g_win[W_SHELL], "シェル (busybox sh)", sa_, scols, srows, g_fb.w - sw - 16, g_fb.h - sh - 16);
+    /* The browser: as wide as the screen allows (up to 100 columns), hidden
+     * until the ブラウザ button is pressed; it starts on its help page. */
+    int wcols = (g_fb.w - 48) / FONT_W, wrows = (g_fb.h - BAR_H - 60) / FONT_H;
+    if (wcols > 100) wcols = 100;
+    if (wrows > 40) wrows = 40;
+    if (wcols < 20) wcols = 20;
+    if (wrows < 5) wrows = 5;
+    int ww = wcols * FONT_W + 2 * PAD + 2;
+    win_init(&g_win[W_WEB], "ブラウザ (alterego-web)", wa, wcols, wrows, g_fb.w - ww - 16, BAR_H + 12);
+    g_win[W_WEB].visible = 0;
     g_mx = g_fb.w / 2;
     g_my = g_fb.h / 2;
     ime_init(&g_ime, g_dict.idx ? &g_dict : NULL);
@@ -542,6 +589,7 @@ int main(void)
     long script_next = now_ms() + 1500;
     size_t script_pos = 0;
     if (g_script && getenv("ALTEREGO_SCRIPT_KANA")) g_kana_mode = 1;
+    if (g_script && (p = getenv("ALTEREGO_SCRIPT_WIN"))) raise_win(strcmp(p, "web") == 0 ? W_WEB : strcmp(p, "shell") == 0 ? W_SHELL : W_CHAT);
     while (!g_stop) {
         if (g_script && now_ms() >= script_next) {
             if (g_script[script_pos]) {
@@ -552,6 +600,7 @@ int main(void)
                 script_next = now_ms() + (c == '\n' ? 700 : 30);
             } else if (now_ms() >= script_next + 1500) {
                 render();
+                dump_windows(getenv("ALTEREGO_DUMP"));
                 break;
             }
         }
