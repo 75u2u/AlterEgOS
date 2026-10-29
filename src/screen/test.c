@@ -443,17 +443,21 @@ static void test_face(const char *fontpath)
     face_look(&fc, 100, 0);
     for (int i = 0; i < 10; i++) face_tick(&fc, now + i * 80);
     face_draw(&fc, &cv, &f, 10, 10, now + 800);
-    CHECK(cv.px[(size_t)(10 + 100) * cv.w + 10 + FACE_W / 2] == 0xFFE9DA, "skin at the centre: %06x", cv.px[(size_t)110 * cv.w + 10 + FACE_W / 2]);
+    CHECK(cv.px[(size_t)(10 + 100) * cv.w + 10 + FACE_W / 2] == 0x1B2535, "the screen at the centre: %06x", cv.px[(size_t)110 * cv.w + 10 + FACE_W / 2]);
     CHECK(strcmp(fc.label, "うれしい") == 0, "label %s", fc.label);
     CHECK(fc.look_x == 4, "eyes toward the pointer: %d", fc.look_x);
     int outside = 0;
     for (int y = 0; y < cv.h; y++) for (int x = 0; x < cv.w; x++)
         if ((x < 10 || y < 10 || x >= 10 + FACE_W || y >= 10 + FACE_H) && cv.px[(size_t)y * cv.w + x] != 0x123456) outside++;
     CHECK(outside == 0, "%d pixels outside the box", outside);
-    /* the stage changes the face: a newborn has no hair over the forehead */
+    /* the stage changes the look: a newborn has no ears yet, from 片言 it has */
+    canvas_fill(&cv, 0, 0, cv.w, cv.h, 0x123456);
     face_set(&fc, "mood=0;bond=0;stage=0;body=0;expr=;say=0", now);
     face_draw(&fc, &cv, &f, 10, 10, now);
-    CHECK(cv.px[(size_t)(10 + 104 - 40) * cv.w + 10 + FACE_W / 2 - 20] == 0xFFE9DA, "newborn forehead is skin");
+    CHECK(cv.px[(size_t)(10 + 100) * cv.w + 10 + 185] == 0x123456, "newborn has no ear: %06x", cv.px[(size_t)(10 + 100) * cv.w + 10 + 185]);
+    face_set(&fc, "mood=0;bond=0;stage=1;body=0;expr=;say=0", now);
+    face_draw(&fc, &cv, &f, 10, 10, now);
+    CHECK(cv.px[(size_t)(10 + 100) * cv.w + 10 + 185] != 0x123456, "片言 has an ear");
     canvas_free(&cv);
     font_free(&f);
 }
