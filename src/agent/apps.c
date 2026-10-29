@@ -9,11 +9,13 @@
 #include <time.h>
 
 #include "apps.h"
+#include "drawings.h"
 #include "shapes.h"
 #include "store.h"
 #include "utf8.h"
 
 static int has(const char *s, const char *needle) { return strstr(s, needle) != NULL; }
+static int starts_ci(const char *lo, const char *pre) { return strncmp(lo, pre, strlen(pre)) == 0; }
 
 static int has_word(const char *lo, const char *w)
 {
@@ -155,6 +157,8 @@ static int handle_window(enum brain_lang lang, const char *you, const char *line
 
 /* ------------------------------------------------------------------------ */
 /* pictures */
+
+static char g_last_picture[600];                     /* the picture last looked at (for 「これは〇〇」) */
 
 static const struct { uint32_t rgb; const char *ja, *en; } palette[] = {
     { 0x000000, "黒", "black" }, { 0x7F7F7F, "灰色", "gray" }, { 0xE53935, "赤", "red" }, { 0xFB8C00, "オレンジ", "orange" },
@@ -338,6 +342,7 @@ static int handle_picture(enum brain_lang lang, const char *you, const char *lin
         return 1;
     }
     apps_describe_picture(lang, path, out, cap, r->note, sizeof r->note);
+    snprintf(g_last_picture, sizeof g_last_picture, "%s", path);
     snprintf(r->action, sizeof r->action, "look at %.100s", path);
     return 1;
 }
@@ -345,66 +350,165 @@ static int handle_picture(enum brain_lang lang, const char *you, const char *lin
 /* ------------------------------------------------------------------------ */
 /* drawing: 「顔を描いて」 */
 
-/* What it knows how to draw: a spec for paint_run (see paint.h: units of
- * 1/1000 of the sheet's height, the sheet about 1600 wide). */
-static const struct { const char *ja, *ja2, *en, *en2, *spec; } drawings[] = {
-    { "丸", "円", "circle", "round", "c 800 500 300" },
-    { "線", "直線", "line", NULL, "l 300 500 1300 500" },
-    { "四角", "しかく", "square", "rectangle", "p 5 500 250 1100 250 1100 750 500 750 500 250" },
-    { "三角", "さんかく", "triangle", NULL, "p 4 800 200 1150 800 450 800 800 200" },
-    { "星", "ほし", "star", NULL, "p 6 800 150 1006 783 467 392 1133 392 594 783 800 150" },
-    { "ハート", "はーと", "heart", NULL, "p 17 800 420 818 366 913 288 1052 313 1120 440 1052 586 913 712 818 816 800 860 782 816 687 712 548 586 480 440 548 313 687 288 782 366 800 420" },
-    { "顔", "かお", "face", "smiley", "c 800 500 300 C 690 420 30 C 910 420 30 p 5 660 600 720 660 800 680 880 660 940 600" },
-    { "太陽", "たいよう", "sun", NULL, "k FB8C00 C 800 500 200 s 8 l 800 200 800 100 l 800 800 800 900 l 500 500 400 500 l 1100 500 1200 500 l 588 288 517 217 l 1012 288 1083 217 l 588 712 517 783 l 1012 712 1083 783" },
-    { "家", "いえ", "house", "home", "k 8D6E63 P 4 500 500 1100 500 1100 900 500 900 k E53935 P 3 450 500 800 200 1150 500 k 1E88E5 P 4 740 650 860 650 860 900 740 900" },
-    { "木", "き", "tree", NULL, "k 8D6E63 P 4 740 600 860 600 860 950 740 950 k 43A047 C 800 450 250" },
-    { "花", "はな", "flower", NULL, "k 43A047 s 6 l 800 600 800 950 k F06292 C 800 300 90 C 930 390 90 C 670 390 90 C 720 540 90 C 880 540 90 k FDD835 C 800 430 70" },
-    { "山", "やま", "mountain", NULL, "k 7F7F7F P 3 250 900 800 200 1350 900 k FFFFFF P 3 690 350 800 200 910 350" },
-    { "猫", "ねこ", "cat", NULL, "c 800 520 280 P 3 580 330 620 120 760 270 P 3 1020 330 980 120 840 270 C 700 470 25 C 900 470 25 P 3 770 580 830 580 800 620 l 500 560 720 600 l 500 640 720 620 l 1100 560 880 600 l 1100 640 880 620" },
-    { "魚", "さかな", "fish", NULL, "p 13 1050 500 1010 585 900 647 750 670 600 647 490 585 450 500 490 415 600 353 750 330 900 353 1010 415 1050 500 P 3 1050 500 1250 350 1250 650 C 560 450 20" },
-    { "車", "くるま", "car", NULL, "P 4 400 500 1200 500 1200 750 400 750 P 4 550 500 700 350 950 350 1050 500 k 000000 C 600 780 70 C 1000 780 70" },
-    { NULL, NULL, NULL, NULL, NULL }
-};
-
 static const struct { const char *ja, *en, *hex; } draw_colors[] = {
     { "赤", "red", "E53935" }, { "青", "blue", "1E88E5" }, { "緑", "green", "43A047" }, { "黄色", "yellow", "FDD835" }, { "黄", "yellow", "FDD835" },
     { "黒", "black", "000000" }, { "紫", "purple", "8E24AA" }, { "ピンク", "pink", "F06292" }, { "桃色", "pink", "F06292" }, { "水色", "cyan", "00ACC1" },
     { "オレンジ", "orange", "FB8C00" }, { "橙", "orange", "FB8C00" }, { "茶色", "brown", "8D6E63" }, { "灰色", "gray", "7F7F7F" }, { NULL, NULL, NULL }
 };
 
+/* The name in 「これは雪だるま(だよ)」 / "this is a snowman". */
+static int name_after(const char *line, const char *lo, const char *const *heads, char *name, size_t cap)
+{
+    for (int i = 0; heads[i]; i++) {
+        const char *p = strstr(line, heads[i]);
+        if (!p) { p = strstr(lo, heads[i]); if (p) p = line + (p - lo); }
+        if (!p) continue;
+        p += strlen(heads[i]);
+        while (*p == ' ' || strncmp(p, "　", 3) == 0) p += *p == ' ' ? 1 : 3;
+        snprintf(name, cap, "%s", p);
+        /* cut the tail: 「だよ」「です」「だ」「。」「！」 / "." "!" */
+        static const char *const tails[] = { "だよ", "です", "だね", "なの", "だ", "。", "！", "!", ".", "ね", "よ", NULL };
+        for (int again = 1; again; ) {
+            again = 0;
+            size_t n = strlen(name);
+            while (n > 0 && name[n - 1] == ' ') name[--n] = '\0';
+            for (int t = 0; tails[t]; t++) {
+                size_t tl = strlen(tails[t]);
+                if (n > tl && memcmp(name + n - tl, tails[t], tl) == 0) { name[n - tl] = '\0'; again = 1; break; }
+            }
+        }
+        if (strncmp(name, "a ", 2) == 0) memmove(name, name + 2, strlen(name) - 1);
+        else if (strncmp(name, "an ", 3) == 0) memmove(name, name + 3, strlen(name) - 2);
+        return name[0] != '\0' && utf8_count(name) <= 20;
+    }
+    return 0;
+}
+
+/* Learning to draw: 「これは雪だるま」 (from the picture shown), 「雪だるまは
+ * こう描く: 大きい丸の上に小さい丸」 (from words), 「雪だるまの描き方を忘れて」. */
+static int handle_teach(enum brain_lang lang, const char *you, const char *line, const char *lo, char *out, size_t cap, struct apps_result *r)
+{
+    int en = lang == BRAIN_EN;
+    char name[DRAW_NAME * 2], err[256];
+    (void)you;
+    /* forgetting */
+    if ((has(line, "描き方を忘れて") || has(line, "描き方をわすれて") || has(line, "の描き方は忘れて") || starts_ci(lo, "forget how to draw "))) {
+        const char *p = strstr(line, "の描き方");
+        if (p) snprintf(name, sizeof name, "%.*s", (int)(p - line), line);
+        else snprintf(name, sizeof name, "%s", line + strlen("forget how to draw "));
+        while (name[0] && (name[strlen(name) - 1] == ' ' || name[strlen(name) - 1] == '.')) name[strlen(name) - 1] = '\0';
+        if (strncmp(name, "a ", 2) == 0) memmove(name, name + 2, strlen(name) - 1);
+        if (drawings_forget(name)) { snprintf(out, cap, en ? "Forgot how to draw %s." : "%sの描き方を忘れた。", name); snprintf(r->action, sizeof r->action, "forget drawing %.60s", name); }
+        else snprintf(out, cap, en ? "I never learned to draw %s, so there is nothing to forget." : "%sの描き方は教わっていないから、忘れようがない。", name);
+        return 1;
+    }
+    /* from words: 「Xはこう描く: ...」 / "X is drawn like this: ..." / "draw X like this: ..." */
+    {
+        static const char *const marks_ja[] = { "はこう描く", "はこうかく", "はこう書く", "の描き方は", "の描き方:", "の描き方：", "はこう描いて", NULL };
+        const char *m = NULL, *mark = NULL;
+        for (int i = 0; marks_ja[i] && !m; i++) { m = strstr(line, marks_ja[i]); mark = marks_ja[i]; }
+        const char *desc = NULL;
+        if (m) {
+            snprintf(name, sizeof name, "%.*s", (int)(m - line), line);
+            desc = m + strlen(mark);
+        } else {
+            static const char *const marks_en[] = { " is drawn like this", " is drawn like so", " like this", NULL };
+            for (int i = 0; marks_en[i] && !m; i++) { m = strstr(lo, marks_en[i]); mark = marks_en[i]; }
+            if (m && (starts_ci(lo, "draw ") || has(lo, " is drawn"))) {
+                const char *from = starts_ci(lo, "draw ") ? line + 5 : line;
+                if (strncmp(from, "a ", 2) == 0) from += 2; else if (strncmp(from, "an ", 3) == 0) from += 3;
+                snprintf(name, sizeof name, "%.*s", (int)((line + (m - lo)) - from), from);
+                desc = line + (m - lo) + strlen(mark);
+            }
+        }
+        if (desc) {
+            while (*desc == ':' || *desc == ' ' || strncmp(desc, "：", 3) == 0 || strncmp(desc, "。", 3) == 0 || strncmp(desc, "、", 3) == 0) desc += (*desc == ':' || *desc == ' ') ? 1 : 3;
+            while (name[0] && name[strlen(name) - 1] == ' ') name[strlen(name) - 1] = '\0';
+            if (!name[0]) return 0;
+            if (!*desc) {                                              /* 「Xはこう描く」 alone: the picture shown is X */
+                desc = NULL;
+            } else {
+                if (drawings_learn_words(name, desc, lang, err, sizeof err) != 0) { snprintf(out, cap, "%s", err); return 1; }
+                snprintf(out, cap, en ? "Got it. That is how I draw %s now. Say \"draw %s\" and I will." : "覚えた。これからは「%sを描いて」でそう描くよ。", name, name);
+                snprintf(r->action, sizeof r->action, "learn drawing %.60s (words)", name);
+                snprintf(r->note, sizeof r->note, en ? "%s taught me to draw %s" : "%sの描き方を教えてもらった", en ? you : name, name);
+                return 1;
+            }
+        }
+        if (m && !desc) goto from_picture;
+    }
+    /* from the picture: 「これは雪だるま」 / "this is a snowman" */
+    {
+        static const char *const heads[] = { "これは", "この絵は", "いま描いたのは", "今描いたのは", "this is ", "this picture is ", "this drawing is ", "that is ", NULL };
+        if (!name_after(line, lo, heads, name, sizeof name)) return 0;
+        if (has(name, "何") || has(name, "なに") || has(lo, "what")) return 0;         /* 「これは何？」 is a question */
+    }
+from_picture:
+    {
+        char path[600];
+        snprintf(path, sizeof path, "%s", g_last_picture);
+        if (!path[0] && !newest_picture(path, sizeof path)) {
+            snprintf(out, cap, en ? "Which picture? Draw it in paint and press 「見せる」, then tell me." : "どの絵？　ペイントで描いて「見せる」を押してから教えて。");
+            return 1;
+        }
+        if (drawings_learn_picture(name, path, lang, err, sizeof err) != 0) { snprintf(out, cap, "%s", err); return 1; }
+        snprintf(out, cap, en ? "I see. So that is %s. I will remember how it looks; say \"draw %s\" and I will draw it." : "そうか、これが%sなんだ。覚えた。「%sを描いて」で描くよ。", name, name);
+        snprintf(r->action, sizeof r->action, "learn drawing %.60s (picture)", name);
+        snprintf(r->note, sizeof r->note, en ? "%s showed me what %s looks like" : "%sがどんな形か見せてもらった", en ? you : name, name);
+        return 1;
+    }
+}
+
 static int handle_draw(enum brain_lang lang, const char *you, const char *line, const char *lo, char *out, size_t cap, struct apps_result *r)
 {
     int en = lang == BRAIN_EN;
+    char list[1024];
+    /* what can you draw */
+    if (has(line, "描けるもの") || has(line, "何が描ける") || has(line, "なにが描ける") || has(line, "何を描ける") || has(lo, "what can you draw")) {
+        drawings_list(lang, list, sizeof list);
+        snprintf(out, cap, en ? "I can draw: %s. Teach me more: draw one in paint and say \"this is a snowman\", or say \"a snowman is drawn like this: a big circle, a small circle above it\"."
+                              : "描けるのは: %s。ペイントで描いて「これは雪だるま」と教えてくれるか、「雪だるまはこう描く: 大きい丸の上に小さい丸」と言ってくれたら増えるよ。", list);
+        return 1;
+    }
+    /* a clean sheet */
+    if (has(line, "全部消して") || has(line, "紙を白く") || has(line, "絵を消して") || has(line, "ペイントを消して") || has(lo, "clear the sheet") || has(lo, "clear the paint") || has(lo, "clear the drawing")) {
+        if (!getenv("ALTEREGO_SCREEN")) { snprintf(out, cap, en ? "There is no sheet here to clear." : "ここには画面がないから、消す紙もない。"); return 1; }
+        snprintf(out, cap, en ? "Cleared the sheet." : "紙を白くしたよ。");
+        ask_desktop(out, cap, "draw", APP_PAINT, "e");
+        snprintf(r->action, sizeof r->action, "clear paint");
+        return 1;
+    }
     int asked = has(line, "描いて") || has(line, "かいて") || has(line, "描け") || has(line, "書いて") ||
                 has_word(lo, "draw") || (has_word(lo, "paint") && (has(lo, "paint a ") || has(lo, "paint me ")));
     if (!asked || strchr(line, '/')) return 0;                     /* 「/path に書いて」 is a file */
-    int pick = -1, any = has(line, "何か") || has(line, "なにか") || has(line, "好きなもの") || has(lo, "something") || has(lo, "anything");
-    for (int i = 0; drawings[i].ja && pick < 0; i++)
-        if (has(line, drawings[i].ja) || (drawings[i].ja2 && has(line, drawings[i].ja2)) || has_word(lo, drawings[i].en) || (drawings[i].en2 && has_word(lo, drawings[i].en2))) pick = i;
+    if (has(line, "こう描") || has(lo, "like this")) return 0;      /* teaching, not asking */
+    struct drawing d;
+    int any = has(line, "何か") || has(line, "なにか") || has(line, "好きなもの") || has(lo, "something") || has(lo, "anything");
+    int pick = drawings_find(line, lo, &d);
     if (pick < 0 && !any) {
         if (!has(line, "絵") && !has(line, "描いて") && !has(line, "描け") && !has_word(lo, "draw")) return 0;      /* 「〇〇と書いて」 without a thing to draw */
-        size_t o = (size_t)snprintf(out, cap, en ? "I cannot draw that yet. What I can draw: " : "それはまだ描けない。描けるのは: ");
-        for (int i = 0; drawings[i].ja && o + 16 < cap; i++) o += (size_t)snprintf(out + o, cap - o, "%s%s", i ? (en ? ", " : "、") : "", en ? drawings[i].en : drawings[i].ja);
-        if (o + 4 < cap) snprintf(out + o, cap - o, en ? "." : "。");
+        drawings_list(lang, list, sizeof list);
+        snprintf(out, cap, en ? "I cannot draw that yet. What I can draw: %s. Draw it in paint and say \"this is a ...\", or tell me \"... is drawn like this: ...\", and I will learn it."
+                              : "それはまだ描けない。描けるのは: %s。ペイントで描いて「これは〇〇」と教えてくれるか、「〇〇はこう描く: 大きい丸の上に小さい丸」と言ってくれたら覚えるよ。", list);
         return 1;
     }
-    if (pick < 0) pick = (int)(time(NULL) % 15);
+    if (pick < 0) { int n = 0; while (drawings_nth(n + 1, &d)) n++; drawings_nth((int)(time(NULL) % (n + 1)), &d); }
     const char *color = NULL, *color_name = NULL;
     for (int i = 0; draw_colors[i].ja && !color; i++)
         if (has(line, draw_colors[i].ja) || has_word(lo, draw_colors[i].en)) { color = draw_colors[i].hex; color_name = en ? draw_colors[i].en : draw_colors[i].ja; }
-    const char *name = en ? drawings[pick].en : drawings[pick].ja;
+    const char *name = en ? d.en : d.ja;
     if (!getenv("ALTEREGO_SCREEN")) {
         if (en) snprintf(out, cap, "I have no screen here to draw on. On the desktop I would draw %s%s%s in paint.", color_name ? color_name : "a", " ", name);
         else snprintf(out, cap, "ここには画面がないから描けない。画面があればペイントに%s%s%sを描くよ。", color_name ? color_name : "", color_name ? "の" : "", name);
         return 1;
     }
-    char spec[900];
-    snprintf(spec, sizeof spec, "%s%s%s%s", color ? "k " : "", color ? color : "", color ? " " : "", drawings[pick].spec);
+    char spec[DRAW_SPEC + 16];
+    snprintf(spec, sizeof spec, "%s%s%s%s", color ? "k " : "", color ? color : "", color ? " " : "", d.spec);
     if (en) snprintf(out, cap, "I drew %s%s%s in paint. Have a look, %s.", color_name ? color_name : "a", color_name ? " " : " ", name, you);
     else snprintf(out, cap, "%s%s%sを描いたよ。ペイントを見て、%s。", color_name ? color_name : "", color_name ? "の" : "", name, you);
     ask_desktop(out, cap, "draw", APP_PAINT, spec);
-    snprintf(r->action, sizeof r->action, "draw %s", drawings[pick].en);
-    snprintf(r->note, sizeof r->note, en ? "I drew %s for you" : "%sに%sを描いてあげた", en ? drawings[pick].en : you, drawings[pick].ja);
+    snprintf(r->action, sizeof r->action, "draw %.60s", d.en[0] ? d.en : d.ja);
+    snprintf(r->note, sizeof r->note, en ? "I drew %s for you" : "%sに%sを描いてあげた", en ? name : you, d.ja);
     return 1;
 }
 
@@ -412,6 +516,7 @@ int apps_handle(enum brain_lang lang, const char *you, const char *line, const c
 {
     memset(r, 0, sizeof *r);
     if (handle_picture(lang, you, line, lo, out, cap, r)) return 1;
+    if (handle_teach(lang, you, line, lo, out, cap, r)) return 1;
     if (handle_draw(lang, you, line, lo, out, cap, r)) return 1;
     return handle_window(lang, you, line, lo, out, cap, r);
 }

@@ -37,7 +37,7 @@ struct term {
     /* OSC strings (ESC ] ... BEL/ST) are kept so the desktop can act on
      * the agent's requests: "7700;open;paint" and the like. osc_ready is
      * set when a complete one is in `osc`; the reader clears it. */
-    char osc[1024];
+    char osc[4096];
     int osc_len;
     int osc_ready;
 };

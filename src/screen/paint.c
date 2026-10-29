@@ -198,6 +198,48 @@ static void poly_fill(struct paint *p, const int *xs, const int *ys, int n)
     }
 }
 
+/* Paste the ink of the PPM at `path` (paper = white stays out) into the
+ * box x0,y0-x1,y1 of the sheet, the picture's own ink box scaled to it. */
+static int paste(struct paint *p, const char *path, int x0, int y0, int x1, int y1)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    char magic[3] = "";
+    int w = 0, h = 0, maxv = 0;
+    if (fscanf(f, "%2s %d %d %d", magic, &w, &h, &maxv) != 4 || strcmp(magic, "P6") != 0 || w <= 0 || h <= 0 || w > 8192 || h > 8192) { fclose(f); return 0; }
+    fgetc(f);
+    size_t n = (size_t)w * h * 3;
+    unsigned char *px = malloc(n);
+    if (!px || fread(px, 1, n, f) != n) { free(px); fclose(f); return 0; }
+    fclose(f);
+    int ix0 = w, iy0 = h, ix1 = -1, iy1 = -1;
+    for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+        const unsigned char *q = px + ((size_t)y * w + x) * 3;
+        if (q[0] > 235 && q[1] > 235 && q[2] > 235) continue;
+        if (x < ix0) ix0 = x;
+        if (x > ix1) ix1 = x;
+        if (y < iy0) iy0 = y;
+        if (y > iy1) iy1 = y;
+    }
+    if (ix1 < 0) { free(px); return 0; }
+    int iw = ix1 - ix0 + 1, ih = iy1 - iy0 + 1, dw = x1 - x0, dh = y1 - y0;
+    if (dw < 1) dw = 1;
+    if (dh < 1) dh = 1;
+    for (int y = y0; y < y1; y++) {
+        if (y < 0 || y >= p->h) continue;
+        int sy = iy0 + (int)((long)(y - y0) * ih / dh);
+        for (int x = x0; x < x1; x++) {
+            if (x < 0 || x >= p->w) continue;
+            int sx = ix0 + (int)((long)(x - x0) * iw / dw);
+            const unsigned char *q = px + ((size_t)sy * w + sx) * 3;
+            if (q[0] > 235 && q[1] > 235 && q[2] > 235) continue;
+            p->px[(size_t)y * p->w + x] = ((uint32_t)q[0] << 16) | ((uint32_t)q[1] << 8) | q[2];
+        }
+    }
+    free(px);
+    return 1;
+}
+
 int paint_run(struct paint *p, const char *spec)
 {
     int done = 0, drawn = 0, tool = p->tool, size = p->size;
@@ -212,6 +254,18 @@ int paint_run(struct paint *p, const char *spec)
         int nv = 0;
         if (cmd == 'k') { unsigned long c = strtoul(s, (char **)&s, 16); p->color = (uint32_t)(c & 0xFFFFFF); done++; continue; }
         if (cmd == 'e') { paint_clear(p); done++; drawn = 0; continue; }
+        if (cmd == 'i') {                                               /* i path x0 y0 x1 y1 */
+            while (*s == ' ') s++;
+            char path[512];
+            size_t pl = strcspn(s, " ");
+            if (pl == 0 || pl >= sizeof path) return done;
+            snprintf(path, sizeof path, "%.*s", (int)pl, s);
+            s += pl;
+            for (int i = 0; i < 4; i++) { char *end; v[i] = strtol(s, &end, 10); if (end == s) return done; s = end; }
+            if (paste(p, path, U(p, v[0]), U(p, v[1]), U(p, v[2]), U(p, v[3]))) drawn = 1;
+            done++;
+            continue;
+        }
         int want = cmd == 's' ? 1 : cmd == 'l' ? 4 : (cmd == 'c' || cmd == 'C') ? 3 : (cmd == 'p' || cmd == 'P') ? 1 : -1;
         if (want < 0) break;                                            /* unknown: stop */
         for (int i = 0; i < want; i++) { char *end; v[nv] = strtol(s, &end, 10); if (end == s) return done; s = end; nv++; }
