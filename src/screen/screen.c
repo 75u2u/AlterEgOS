@@ -229,16 +229,20 @@ static void win_init_paint(struct win *w, const char *title, int pw, int ph, int
     paint_init(&w->paint, pw, ph);
 }
 
-static void raise_win(int i)
+/* Bring window i to the front; the keyboard follows unless `keep_focus`
+ * (AlterEgo showing a drawing while the user keeps typing in the chat). */
+static void show_win(int i, int keep_focus)
 {
     int pos = -1;
     for (int k = 0; k < WIN_MAX; k++) if (g_order[k] == i) pos = k;
     for (int k = pos; k < WIN_MAX - 1; k++) g_order[k] = g_order[k + 1];
     g_order[WIN_MAX - 1] = i;
-    g_focus = i;
+    if (!keep_focus) g_focus = i;
     g_win[i].visible = 1;
     g_dirty = 1;
 }
+
+static void raise_win(int i) { show_win(i, 0); }
 
 static void win_write(struct win *w, const char *s, size_t n)
 {
@@ -267,8 +271,10 @@ static int app_named(const char *name)
 }
 
 /* A request from a program in a window, sent as an OSC string
- * "7700;open;<app>[;url]" or "7700;close;<app>" (the agent does this for
- * 「ペイントを開いて」). Opening the browser on a URL restarts it there. */
+ * "7700;open;<app>[;url]", "7700;close;<app>" or "7700;draw;paint;<spec>"
+ * (the agent does this for 「ペイントを開いて」 and 「顔を描いて」). Opening
+ * the browser on a URL restarts it there; a drawing is saved at once so
+ * that 「絵を見て」 finds it. */
 static void handle_osc(const char *osc)
 {
     if (strncmp(osc, "7700;", 5) != 0) return;
@@ -283,6 +289,15 @@ static void handle_osc(const char *osc)
     int i = app_named(app);
     if (i < 0) return;
     if (strcmp(cmd, "close") == 0) { hide_win(i); return; }
+    if (strcmp(cmd, "draw") == 0 && i == W_PAINT) {               /* AlterEgo draws: run the spec, keep the picture */
+        struct win *w = &g_win[W_PAINT];
+        if (paint_run(&w->paint, p) > 0) {
+            paint_save(&w->paint, g_save_dir);
+            snprintf(w->paint.msg, sizeof w->paint.msg, "AlterEgo が描いた");
+        }
+        show_win(W_PAINT, 1);
+        return;
+    }
     if (strcmp(cmd, "open") != 0) return;
     if (i == W_WEB && *p) {
         snprintf(g_web_url, sizeof g_web_url, "%s", p);

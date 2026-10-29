@@ -319,7 +319,8 @@ static const struct { const char *ja, *en; } ability_names[] = {
     { "再起動して / 電源を切って", "reboot / power off" },
     { "ペイントを開いて / ブラウザを閉じて(画面の窓)", "open paint / close the browser (the desktop's windows)" },
     { "https://… を開いて / 〇〇を調べて(ブラウザで)", "open https://... / look up ... (in the browser)" },
-    { "絵を見て(ペイントで描いた絵の感想)", "look at my drawing (what I see in the paint picture)" },
+    { "絵を見て(ペイントで描いた絵の色・形・感想)", "look at my drawing (the colors and shapes I see in the paint picture)" },
+    { "顔を描いて / 赤いハートを描いて(ペイントに描く: 丸・線・四角・三角・星・ハート・顔・太陽・家・木・花・山・猫・魚・車)", "draw a face / draw a red heart (in paint: circle, line, square, triangle, star, heart, face, sun, house, tree, flower, mountain, cat, fish, car)" },
     { "「X」と言ったら「Y」を実行して(新しいできることを覚える)", "when I say X, run Y (learn a new ability)" },
     { "何をした？(やったことの記録)", "what did you do (the action log)" },
     { NULL, NULL }

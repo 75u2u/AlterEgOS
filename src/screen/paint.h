@@ -47,6 +47,13 @@ void     paint_clear(struct paint *p);
 /* Write the bitmap as PPM into `dir` (created if needed); the path lands in p->msg. */
 int      paint_save(struct paint *p, const char *dir);
 uint32_t paint_pixel(const struct paint *p, int x, int y);
+/* Draw what AlterEgo asks for: a spec of space-separated commands with
+ * coordinates in 1/1000 of the sheet's height from the top left (the
+ * agent assumes a sheet about 1600 wide): k RRGGBB (color), s R (brush
+ * radius), l x1 y1 x2 y2, c cx cy r (circle), C cx cy r (filled),
+ * p N x1 y1 … xN yN (polyline), P N … (filled polygon), e (empty the
+ * sheet first). Returns the number of commands drawn. */
+int      paint_run(struct paint *p, const char *spec);
 extern const uint32_t paint_palette[PAINT_COLORS];
 
 #endif

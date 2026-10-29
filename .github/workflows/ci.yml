@@ -134,10 +134,38 @@ jobs:
           EOF
           out=$(printf '絵を見て\nlook at my drawing\n何を覚えてる？\nexit\n' | run)
           echo "$out"
-          echo "$out" | grep -q '^user> AlterEgo: （じっと見る）……赤と青の絵だ。紙の 19% くらい、真ん中に、ほどほどの大きさで描いてある。あたたかい感じがする。'
-          echo "$out" | grep -q '^user> AlterEgo: (looks closely) ... a picture in red and blue\. It covers about 19% of the sheet, medium sized, at the middle\. It feels warm\.'
-          echo "$out" | grep -q '赤と青の絵を見せてもらった'
+          echo "$out" | grep -q '^user> AlterEgo: （じっと見る）……赤と青の絵だ。塗った四角が 1 つに見える。紙の 19% くらい、真ん中に、ほどほどの大きさで描いてある。あたたかい感じがする。'
+          echo "$out" | grep -q '^user> AlterEgo: (looks closely) ... a picture in red and blue\. I see a filled box\. It covers about 19% of the sheet, medium sized, at the middle\. It feels warm\.'
+          echo "$out" | grep -q '赤と青の絵.*を見せてもらった'
           grep -q 'look at .*/paint-20261029-000000.ppm' "$state/actions.log"
+      - name: Agent smoke test (shapes in a picture, drawing on request)
+        run: |
+          state=$(mktemp -d)
+          run() { ALTEREGO_STATE="$state" ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml ./src/agent/alterego; }
+          pics=$(mktemp -d)
+          python3 scripts/shape-pictures.py "$pics"
+          out=$(printf '絵を見て: %s\n絵を見て: %s\n絵を見て: %s\n絵を見て: %s\n絵を見て: %s\n絵を見て: %s\n絵を見て: %s\nlook at my drawing: %s\n何を覚えてる？\nexit\n' \
+                "$pics/line.ppm" "$pics/circle.ppm" "$pics/square.ppm" "$pics/triangle.ppm" "$pics/heart.ppm" "$pics/mixed.ppm" "$pics/face.ppm" "$pics/face.ppm" | run)
+          echo "$out"
+          echo "$out" | grep -q '黒の絵だ。線が 1 本に見える。'
+          echo "$out" | grep -q '赤の絵だ。丸が 1 つに見える。'
+          echo "$out" | grep -q '青の絵だ。四角が 1 つに見える。'
+          echo "$out" | grep -q '黒の絵だ。三角が 1 つに見える。'
+          echo "$out" | grep -q '赤の絵だ。ハートが 1 つに見える。.*ハート！'
+          echo "$out" | grep -q '赤と青の絵だ。丸が 1 つと線が 2 本に見える。'
+          echo "$out" | grep -q '黒と赤の絵だ。顔だ！目が 2 つと口がある。.*にこにこしてる？'
+          echo "$out" | grep -q 'a picture in black and red. A face! 2 eyes and a mouth\.'
+          echo "$out" | grep -q '顔の絵を見せてもらった'
+          # drawing: no screen → says so; with a screen → the OSC drawing request; a color; an unknown thing
+          out=$(printf '顔を描いて\nexit\n' | run)
+          echo "$out" | grep -q '^user> AlterEgo: ここには画面がないから描けない。画面があればペイントに顔を描くよ。'
+          out=$(printf '顔を描いて\n赤いハートを描いて\ndraw a cat\nロボットを描いて\n何を覚えてる？\nexit\n' | ALTEREGO_SCREEN=1 run)
+          echo "$out" | cat -v
+          echo "$out" | grep -q $'^user> AlterEgo: 顔を描いたよ。ペイントを見て、user。\e\]7700;draw;paint;c 800 500 300 C 690 420 30 C 910 420 30 p 5 .*\e\\\\'
+          echo "$out" | grep -q $'^user> AlterEgo: 赤のハートを描いたよ。.*\e\]7700;draw;paint;k E53935 p 17 '
+          echo "$out" | grep -q $'^user> AlterEgo: I drew a cat in paint\. Have a look, user\.\e\]7700;draw;paint;c 800 520 280 '
+          echo "$out" | grep -q '^user> AlterEgo: それはまだ描けない。描けるのは: 丸、線、四角、三角、星、ハート、顔、太陽、家、木、花、山、猫、魚、車。'
+          echo "$out" | grep -q 'userに顔を描いてあげた'
       - name: Screen checks (terminal emulator, romaji to kana, paint, kanji dictionary and conversion, font)
         run: make -C src/screen test
       - name: Browser checks (URL resolution, HTML to text, layout)
@@ -237,6 +265,23 @@ jobs:
           grep -q '^AlterEgo: （じっと見る）……赤の絵だ。' "$state/windows.txt"
           grep -q '^(paint 640x400, 1 strokes)' "$state/windows.txt"
           python3 scripts/ppm2png.py "$state/shot.ppm" screenshot-show.png
+      - name: Screen smoke test (AlterEgo draws a face on request, then recognizes it)
+        run: |
+          state=$(mktemp -d)
+          ALTEREGO_HEADLESS=1024x768 ALTEREGO_SNAPSHOT="$state/shot.ppm" ALTEREGO_DUMP="$state/windows.txt" \
+          ALTEREGO_SCRIPT=$'顔を描いて\n絵を見て\n' \
+          ALTEREGO_FONT=src/screen/font.hex ALTEREGO_DICT=src/screen/dict.txt \
+          ALTEREGO_AGENT="$PWD/src/agent/alterego" ALTEREGO_SHELL=/bin/sh ALTEREGO_WEB="$PWD/src/web/alterego-web" \
+          ALTEREGO_STATE="$state" ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml \
+          timeout 60 ./src/screen/alterego-screen
+          cat "$state/windows.txt"
+          ls "$state/paint"/paint-*.ppm
+          grep -q '^AlterEgo: 顔を描いたよ。ペイントを見て、user。' "$state/windows.txt"
+          grep -q '^user> 絵を見て$' "$state/windows.txt"                  # the keyboard stayed with the chat
+          grep -q '^AlterEgo: （じっと見る）……黒の絵だ。顔だ！目が 2 つと口がある。' "$state/windows.txt"
+          grep -q '^== ペイント$' "$state/windows.txt"
+          grep -q '^(paint 640x400, 1 strokes)' "$state/windows.txt"
+          python3 scripts/ppm2png.py "$state/shot.ppm" screenshot-draw.png
       - name: Upload the desktop screenshots
         uses: actions/upload-artifact@v4
         with:
@@ -246,6 +291,7 @@ jobs:
             screenshot-browser.png
             screenshot-paint.png
             screenshot-show.png
+            screenshot-draw.png
       - name: Init refuses to run outside PID 1
         run: |
           if ./src/init/alteregos-init; then echo "init should have refused"; exit 1; fi

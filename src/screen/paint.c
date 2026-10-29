@@ -1,6 +1,7 @@
 /* The paint app. See paint.h. */
 #define _GNU_SOURCE
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -169,6 +170,86 @@ int paint_save(struct paint *p, const char *dir)
     if (rc == 0) { snprintf(p->last, sizeof p->last, "%s", path); snprintf(p->msg, sizeof p->msg, "保存した: %.100s", path); }
     else snprintf(p->msg, sizeof p->msg, "保存できない: %s", strerror(errno));
     return rc;
+}
+
+/* ---- drawing on request (paint_run) */
+
+static int U(const struct paint *p, long v) { return (int)(v * p->h / 1000); }
+
+static void poly_fill(struct paint *p, const int *xs, const int *ys, int n)
+{
+    int ymin = ys[0], ymax = ys[0];
+    for (int i = 1; i < n; i++) { if (ys[i] < ymin) ymin = ys[i]; if (ys[i] > ymax) ymax = ys[i]; }
+    if (ymin < 0) ymin = 0;
+    if (ymax >= p->h) ymax = p->h - 1;
+    for (int y = ymin; y <= ymax; y++) {
+        int xs_[64], m = 0;
+        for (int i = 0; i < n && m < 64; i++) {
+            int j = (i + 1) % n;
+            int y0 = ys[i], y1 = ys[j], x0 = xs[i], x1 = xs[j];
+            if (y0 == y1) continue;
+            if ((y >= y0 && y < y1) || (y >= y1 && y < y0)) xs_[m++] = x0 + (int)((long)(y - y0) * (x1 - x0) / (y1 - y0));
+        }
+        for (int i = 1; i < m; i++) for (int j = i; j > 0 && xs_[j] < xs_[j - 1]; j--) { int t = xs_[j]; xs_[j] = xs_[j - 1]; xs_[j - 1] = t; }
+        for (int i = 0; i + 1 < m; i += 2) {
+            int a = xs_[i] < 0 ? 0 : xs_[i], b = xs_[i + 1] >= p->w ? p->w - 1 : xs_[i + 1];
+            for (int x = a; x <= b; x++) p->px[(size_t)y * p->w + x] = p->color;
+        }
+    }
+}
+
+int paint_run(struct paint *p, const char *spec)
+{
+    int done = 0, drawn = 0, tool = p->tool, size = p->size;
+    uint32_t color = p->color;
+    p->tool = PT_PEN;
+    const char *s = spec;
+    while (*s) {
+        while (*s == ' ') s++;
+        if (!*s) break;
+        char cmd = *s++;
+        long v[64];
+        int nv = 0;
+        if (cmd == 'k') { unsigned long c = strtoul(s, (char **)&s, 16); p->color = (uint32_t)(c & 0xFFFFFF); done++; continue; }
+        if (cmd == 'e') { paint_clear(p); done++; drawn = 0; continue; }
+        int want = cmd == 's' ? 1 : cmd == 'l' ? 4 : (cmd == 'c' || cmd == 'C') ? 3 : (cmd == 'p' || cmd == 'P') ? 1 : -1;
+        if (want < 0) break;                                            /* unknown: stop */
+        for (int i = 0; i < want; i++) { char *end; v[nv] = strtol(s, &end, 10); if (end == s) return done; s = end; nv++; }
+        if (cmd == 'p' || cmd == 'P') {
+            int n = (int)v[0];
+            if (n < 2 || n > 30) return done;
+            int xs[30], ys[30];
+            for (int i = 0; i < n; i++) {
+                char *end;
+                long x = strtol(s, &end, 10); if (end == s) return done; s = end;
+                long y = strtol(s, &end, 10); if (end == s) return done; s = end;
+                xs[i] = U(p, x); ys[i] = U(p, y);
+            }
+            drawn = 1;
+            if (cmd == 'P') poly_fill(p, xs, ys, n);
+            for (int i = 0; i + 1 < n; i++) line(p, xs[i], ys[i], xs[i + 1], ys[i + 1]);
+            if (cmd == 'P') line(p, xs[n - 1], ys[n - 1], xs[0], ys[0]);
+        } else if (cmd == 's') { p->size = U(p, v[0]); if (p->size < 1) p->size = 1; if (p->size > 40) p->size = 40; }
+        else if (cmd == 'l') { line(p, U(p, v[0]), U(p, v[1]), U(p, v[2]), U(p, v[3])); drawn = 1; }
+        else if (cmd == 'c' || cmd == 'C') {
+            int cx = U(p, v[0]), cy = U(p, v[1]), r = U(p, v[2]);
+            drawn = 1;
+            if (cmd == 'C') { int keep = p->size; p->size = r; dot(p, cx, cy); p->size = keep; done++; continue; }
+            int px0 = cx + r, py0 = cy;
+            for (int a = 10; a <= 360; a += 10) {
+                double rad = a * 3.14159265 / 180;
+                int x = cx + (int)(r * cos(rad) + (cos(rad) < 0 ? -0.5 : 0.5)), y = cy + (int)(r * sin(rad) + (sin(rad) < 0 ? -0.5 : 0.5));
+                line(p, px0, py0, x, y);
+                px0 = x; py0 = y;
+            }
+        }
+        done++;
+    }
+    p->tool = tool;
+    p->size = size;
+    p->color = color;
+    if (drawn) p->strokes++;
+    return done;
 }
 
 void paint_draw(const struct paint *p, struct canvas *c, const struct font *f, int ox, int oy)

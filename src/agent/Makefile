@@ -3,10 +3,10 @@
 CC      ?= gcc
 CFLAGS  ?= -O2
 CFLAGS  += -std=c17 -Wall -Wextra -Werror -Wpedantic
-LDFLAGS += -static
+LDFLAGS += -static -lm
 
-SRC = main.c persona.c brain.c utf8.c store.c skills.c apps.c body.c
-HDR = persona.h brain.h utf8.h store.h skills.h apps.h body.h
+SRC = main.c persona.c brain.c utf8.c store.c skills.c apps.c shapes.c body.c
+HDR = persona.h brain.h utf8.h store.h skills.h apps.h shapes.h body.h
 
 all: alterego
 
