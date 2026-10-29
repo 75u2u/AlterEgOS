@@ -25,6 +25,10 @@ BR2_PACKAGE_BUSYBOX=y
 BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_ALTEREGOS_PATH)/board/alteregos/busybox.fragment"
 
 BR2_PACKAGE_ALTEREGOS=y
+# For the browser: TLS, and the CA certificates it checks https sites against
+# (/etc/ssl/certs/ca-certificates.crt)
+BR2_PACKAGE_MBEDTLS=y
+BR2_PACKAGE_CA_CERTIFICATES=y
 
 BR2_LINUX_KERNEL=y
 BR2_LINUX_KERNEL_CUSTOM_VERSION=y

@@ -10,7 +10,7 @@ static struct cell *at(struct term *t, int x, int y) { return t->cells + (size_t
 static void clear_cells(struct term *t, int x0, int y0, int x1, int y1)   /* [x0,x1) on rows [y0,y1) */
 {
     for (int y = y0; y < y1; y++)
-        for (int x = x0; x < x1; x++) { struct cell *c = at(t, x, y); c->cp = 0; c->kind = CELL_NORMAL; }
+        for (int x = x0; x < x1; x++) { struct cell *c = at(t, x, y); c->cp = 0; c->kind = CELL_NORMAL; c->attr = 0; c->fg = 0; }
     t->dirty = 1;
 }
 
@@ -55,10 +55,7 @@ static void blank(struct term *t, int x, int y)
 
 void term_putc(struct term *t, uint32_t cp)
 {
-    int wide = utf8_class(cp) == CT_HIRAGANA || utf8_class(cp) == CT_KATAKANA || utf8_class(cp) == CT_KANJI ||
-               (cp >= 0x3000 && cp <= 0x303F) || (cp >= 0xFF00 && cp <= 0xFF60) || (cp >= 0xFFE0 && cp <= 0xFFE6) ||
-               (cp >= 0x2E80 && cp <= 0x2FFF) || (cp >= 0x3100 && cp <= 0x9FFF) || (cp >= 0xAC00 && cp <= 0xD7A3) ||
-               (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0x20000 && cp <= 0x3FFFD);
+    int wide = utf8_wide(cp);
     int w = wide ? 2 : 1;
     if (t->wrap_pending || t->cx + w > t->cols) { t->wrap_pending = 0; t->cx = 0; newline(t); }
     blank(t, t->cx, t->cy);
@@ -66,6 +63,8 @@ void term_putc(struct term *t, uint32_t cp)
     struct cell *c = at(t, t->cx, t->cy);
     c->cp = cp;
     c->kind = wide ? CELL_WIDE : CELL_NORMAL;
+    c->attr = t->attr;
+    c->fg = t->fg;
     if (wide) { struct cell *n = at(t, t->cx + 1, t->cy); n->cp = 0; n->kind = CELL_TAIL; }
     t->cx += w;
     if (t->cx >= t->cols) { t->cx = t->cols - 1; t->wrap_pending = 1; }   /* wrap when the next glyph comes */
@@ -83,6 +82,39 @@ static int csi_arg(const struct term *t, int i, int def)
     }
     if (*p == '\0' || *p == ';') return def;
     return atoi(p);
+}
+
+/* SGR: ESC [ p1 ; p2 ... m */
+static void sgr(struct term *t)
+{
+    if (t->csi[0] == '\0') { t->attr = 0; t->fg = 0; return; }
+    const char *p = t->csi;
+    while (*p) {
+        int n = atoi(p);
+        if (n == 0) { t->attr = 0; t->fg = 0; }
+        else if (n == 1) t->attr |= ATTR_BOLD;
+        else if (n == 4) t->attr |= ATTR_UNDERLINE;
+        else if (n == 7) t->attr |= ATTR_REVERSE;
+        else if (n == 22) t->attr &= (uint8_t)~ATTR_BOLD;
+        else if (n == 24) t->attr &= (uint8_t)~ATTR_UNDERLINE;
+        else if (n == 27) t->attr &= (uint8_t)~ATTR_REVERSE;
+        else if (n >= 30 && n <= 37) t->fg = (uint8_t)(n - 30 + 1);
+        else if (n >= 90 && n <= 97) t->fg = (uint8_t)(n - 90 + 9);
+        else if (n == 39) t->fg = 0;
+        else if (n == 38 || n == 48) {              /* 38;5;n / 38;2;r;g;b: skip the arguments */
+            const char *q = strchr(p, ';');
+            if (!q) break;
+            int kind = atoi(q + 1);
+            int skip = kind == 2 ? 4 : kind == 5 ? 2 : 0;
+            p = q;
+            for (int i = 0; i < skip && p; i++) p = strchr(p + 1, ';');
+            if (!p) break;
+            if (n == 38) t->fg = 0;
+        }
+        p = strchr(p, ';');
+        if (!p) break;
+        p++;
+    }
 }
 
 static void clamp(struct term *t)
@@ -144,7 +176,8 @@ static void csi_final(struct term *t, char ch)
     } break;
     case 's': t->saved_cx = t->cx; t->saved_cy = t->cy; break;
     case 'u': t->cx = t->saved_cx; t->cy = t->saved_cy; break;
-    default: break;                               /* m, h, l, r, n, c ...: ignored */
+    case 'm': sgr(t); break;
+    default: break;                               /* h, l, r, n, c ...: ignored */
     }
     clamp(t);
     t->dirty = 1;

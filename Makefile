@@ -7,18 +7,20 @@ ARCH ?= x86_64
 
 all: host
 
-# Build init and the agent with the host compiler. Not bootable; this is the
+# Build init, the agent, the screen and the browser with the host compiler. Not bootable; this is the
 # compile/warning check and the way to run the agent locally.
 host:
 	$(MAKE) -C src/init
 	$(MAKE) -C src/agent
 	$(MAKE) -C src/screen
+	$(MAKE) -C src/web
 
 # Syntax-only check, also for a cross compiler: make check CC=aarch64-linux-gnu-gcc
 check:
 	$(MAKE) -C src/init check
 	$(MAKE) -C src/agent check
 	$(MAKE) -C src/screen check
+	$(MAKE) -C src/web check
 
 # Full OS images via Buildroot.
 x86_64 aarch64:
@@ -42,3 +44,4 @@ clean:
 	$(MAKE) -C src/init clean
 	$(MAKE) -C src/agent clean
 	$(MAKE) -C src/screen clean
+	$(MAKE) -C src/web clean

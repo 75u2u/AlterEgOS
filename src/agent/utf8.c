@@ -54,3 +54,12 @@ enum ctype utf8_class(uint32_t cp)
     if (cp >= 0xFF00 && cp <= 0xFF65) return CT_PUNCT;      /* ！？ etc. */
     return CT_OTHER;
 }
+
+int utf8_wide(uint32_t cp)
+{
+    enum ctype c = utf8_class(cp);
+    return c == CT_HIRAGANA || c == CT_KATAKANA || c == CT_KANJI ||
+           (cp >= 0x3000 && cp <= 0x303F) || (cp >= 0xFF00 && cp <= 0xFF60) || (cp >= 0xFFE0 && cp <= 0xFFE6) ||
+           (cp >= 0x2E80 && cp <= 0x2FFF) || (cp >= 0x3100 && cp <= 0x9FFF) || (cp >= 0xAC00 && cp <= 0xD7A3) ||
+           (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0x20000 && cp <= 0x3FFFD);
+}

@@ -4,3 +4,5 @@ src/agent/alterego
 *.o
 src/screen/alterego-screen
 src/screen/screen-test
+src/web/alterego-web
+src/web/web-test
