@@ -12,6 +12,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "apps.h"
 #include "skills.h"
 #include "store.h"
 
@@ -316,6 +317,9 @@ static const struct { const char *ja, *en; } ability_names[] = {
     { "メモリとディスクは？", "memory and disk" },
     { "実行して: コマンド", "run: command" },
     { "再起動して / 電源を切って", "reboot / power off" },
+    { "ペイントを開いて / ブラウザを閉じて(画面の窓)", "open paint / close the browser (the desktop's windows)" },
+    { "https://… を開いて / 〇〇を調べて(ブラウザで)", "open https://... / look up ... (in the browser)" },
+    { "絵を見て(ペイントで描いた絵の感想)", "look at my drawing (what I see in the paint picture)" },
     { "「X」と言ったら「Y」を実行して(新しいできることを覚える)", "when I say X, run Y (learn a new ability)" },
     { "何をした？(やったことの記録)", "what did you do (the action log)" },
     { NULL, NULL }
@@ -371,12 +375,12 @@ static void done_prefix(enum brain_lang lang, int status, char *out, size_t cap,
     else snprintf(out, cap, lang == BRAIN_EN ? "It did not go well (exit %d).%s%s" : "うまくいかなかった(終了コード %d)。%s%s", status, result[0] ? "\n" : "", result);
 }
 
-static int builtin(struct skills *s, enum brain_lang lang, const char *me, const char *you,
+static int builtin(struct skills *s, struct brain *b, enum brain_lang lang, const char *me, const char *you,
                    const char *line, const char *lo, char *out, size_t cap, int depth)
 {
     char path[256], text[512], result[OUT_BYTES + 128], cmd[2048], q[600];
     int en = lang == BRAIN_EN;
-    (void)you; (void)depth;
+    (void)depth;
 
     /* what can you do */
     if (has(line, "できること") || has(line, "何ができる") || has(line, "なにができる") || has(lo, "what can you do") ||
@@ -387,6 +391,14 @@ static int builtin(struct skills *s, enum brain_lang lang, const char *me, const
     /* the action log */
     if (has(line, "何をした") || has(line, "なにをした") || has(line, "何した") || strcmp(line, "履歴") == 0 || has(lo, "what did you do") || has(lo, "what have you done")) {
         read_actions(lang, out, cap);
+        return 1;
+    }
+    /* the desktop's windows and a picture from paint (before the file
+     * abilities: a URL looks like a path) */
+    struct apps_result ar;
+    if (apps_handle(lang, you, line, lo, out, cap, &ar)) {
+        if (ar.action[0]) log_action(s, line, ar.action, 0);
+        if (ar.note[0] && b) brain_remember_note(b, ar.note);
         return 1;
     }
     /* time */
@@ -516,9 +528,9 @@ static int builtin(struct skills *s, enum brain_lang lang, const char *me, const
 
 /* ------------------------------------------------------------------------ */
 
-static int handle(struct skills *s, enum brain_lang lang, const char *me, const char *you, const char *line_in, char *out, size_t cap, int depth);
+static int handle(struct skills *s, struct brain *b, enum brain_lang lang, const char *me, const char *you, const char *line_in, char *out, size_t cap, int depth);
 
-static int learned(struct skills *s, enum brain_lang lang, const char *me, const char *you, const char *line, char *out, size_t cap, int depth)
+static int learned(struct skills *s, struct brain *b, enum brain_lang lang, const char *me, const char *you, const char *line, char *out, size_t cap, int depth)
 {
     char key[512];
     snprintf(key, sizeof key, "%.511s", line);
@@ -529,7 +541,7 @@ static int learned(struct skills *s, enum brain_lang lang, const char *me, const
     if (i < 0) return 0;
     char action[ACT_MAX];
     snprintf(action, sizeof action, "%s", s->s[i].action);
-    if (depth < 2 && handle(s, lang, me, you, action, out, cap, depth + 1)) return 1;
+    if (depth < 2 && handle(s, b, lang, me, you, action, out, cap, depth + 1)) return 1;
     char result[OUT_BYTES + 128];
     int st = run_cmd(action, result, sizeof result);
     log_action(s, line, action, st);
@@ -537,7 +549,7 @@ static int learned(struct skills *s, enum brain_lang lang, const char *me, const
     return 1;
 }
 
-static int handle(struct skills *s, enum brain_lang lang, const char *me, const char *you, const char *line_in, char *out, size_t cap, int depth)
+static int handle(struct skills *s, struct brain *b, enum brain_lang lang, const char *me, const char *you, const char *line_in, char *out, size_t cap, int depth)
 {
     char line[1024], lo[1024];
     snprintf(line, sizeof line, "%s", line_in);
@@ -569,8 +581,8 @@ static int handle(struct skills *s, enum brain_lang lang, const char *me, const 
             }
         }
     }
-    if (learned(s, lang, me, you, line, out, cap, depth)) return 1;
-    return builtin(s, lang, me, you, line, lo, out, cap, depth);
+    if (learned(s, b, lang, me, you, line, out, cap, depth)) return 1;
+    return builtin(s, b, lang, me, you, line, lo, out, cap, depth);
 }
 
 struct skills *skills_new(void)
@@ -585,8 +597,8 @@ struct skills *skills_new(void)
 void skills_free(struct skills *s) { free(s); }
 int  skills_count(const struct skills *s) { return s->n; }
 
-int skills_handle(struct skills *s, enum brain_lang lang, const char *me, const char *you, const char *line, char *out, size_t cap)
+int skills_handle(struct skills *s, struct brain *b, enum brain_lang lang, const char *me, const char *you, const char *line, char *out, size_t cap)
 {
     out[0] = '\0';
-    return handle(s, lang, me, you, line, out, cap, 0);
+    return handle(s, b, lang, me, you, line, out, cap, 0);
 }

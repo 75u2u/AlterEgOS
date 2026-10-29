@@ -105,6 +105,39 @@ jobs:
           # and so does the next run
           out=$(printf 'おはよう\nexit\n' | run)
           echo "$out" | grep -q 'AlterEgo: はじめまして。まだ、なにも知りません'
+      - name: Agent smoke test (windows asked for in conversation, a picture from paint)
+        run: |
+          state=$(mktemp -d)
+          run() { ALTEREGO_STATE="$state" ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml ./src/agent/alterego; }
+          # without a screen it says so; with one it answers and embeds the OSC request for the desktop
+          out=$(printf 'ペイントを開いて\nexit\n' | run)
+          echo "$out" | grep -q '^user> AlterEgo: ここには画面がないから、ペイントは開けない'
+          out=$(printf 'ペイントを開いて\nopen the browser\nhttps://example.com/a を開いて\n猫の飼い方を調べて\nシェルを閉じて\n絵を見て\nexit\n' | ALTEREGO_SCREEN=1 run)
+          echo "$out" | cat -v
+          echo "$out" | grep -q $'^user> AlterEgo: ペイントを開くね。.*\e\]7700;open;paint\e\\\\'
+          echo "$out" | grep -q $'^user> AlterEgo: Opening the browser\.\e\]7700;open;web\e\\\\'
+          echo "$out" | grep -q $'\e\]7700;open;web;https://example.com/a\e\\\\'
+          echo "$out" | grep -q $'\e\]7700;open;web;https://html.duckduckgo.com/html/?q=%E7%8C%AB%E3%81%AE%E9%A3%BC%E3%81%84%E6%96%B9\e\\\\'
+          echo "$out" | grep -q $'^user> AlterEgo: シェルを閉じるね。\e\]7700;close;shell\e\\\\'
+          echo "$out" | grep -q '^user> AlterEgo: まだ絵をもらっていない'
+          # a red and blue rectangle in the middle of a 640x400 sheet, as paint saves it
+          mkdir -p "$state/paint"
+          python3 - "$state/paint/paint-20261029-000000.ppm" <<'EOF'
+          import sys
+          w, h = 640, 400
+          px = bytearray(b'\xff' * (w * h * 3))
+          for y in range(100, 300):
+              for x in range(200, 440):
+                  i = (y * w + x) * 3
+                  px[i:i + 3] = bytes((0xE5, 0x39, 0x35) if x < 320 else (0x1E, 0x88, 0xE5))
+          open(sys.argv[1], 'wb').write(b'P6\n%d %d\n255\n' % (w, h) + px)
+          EOF
+          out=$(printf '絵を見て\nlook at my drawing\n何を覚えてる？\nexit\n' | run)
+          echo "$out"
+          echo "$out" | grep -q '^user> AlterEgo: （じっと見る）……赤と青の絵だ。紙の 19% くらい、真ん中に、ほどほどの大きさで描いてある。あたたかい感じがする。'
+          echo "$out" | grep -q '^user> AlterEgo: (looks closely) ... a picture in red and blue\. It covers about 19% of the sheet, medium sized, at the middle\. It feels warm\.'
+          echo "$out" | grep -q '赤と青の絵を見せてもらった'
+          grep -q 'look at .*/paint-20261029-000000.ppm' "$state/actions.log"
       - name: Screen checks (terminal emulator, romaji to kana, paint, kanji dictionary and conversion, font)
         run: make -C src/screen test
       - name: Browser checks (URL resolution, HTML to text, layout)
@@ -176,6 +209,34 @@ jobs:
           grep -q '^== ペイント' "$state/windows.txt"
           grep -q '^(paint 640x400, 0 strokes)' "$state/windows.txt"
           python3 scripts/ppm2png.py "$state/shot.ppm" screenshot-paint.png
+      - name: Screen smoke test (the chat opens the paint window, 見せる hands the picture to AlterEgo)
+        run: |
+          state=$(mktemp -d)
+          # 「ペイントを開いて」 typed into the chat: the agent's OSC request opens the (hidden) paint window
+          ALTEREGO_HEADLESS=1024x768 ALTEREGO_DUMP="$state/windows.txt" \
+          ALTEREGO_SCRIPT=$'ペイントを開いて\n' \
+          ALTEREGO_FONT=src/screen/font.hex ALTEREGO_DICT=src/screen/dict.txt \
+          ALTEREGO_AGENT="$PWD/src/agent/alterego" ALTEREGO_SHELL=/bin/sh ALTEREGO_WEB="$PWD/src/web/alterego-web" \
+          ALTEREGO_STATE="$state" ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml \
+          timeout 60 ./src/screen/alterego-screen
+          cat "$state/windows.txt"
+          grep -q '^AlterEgo: ペイントを開くね。' "$state/windows.txt"
+          grep -q '^== ペイント$' "$state/windows.txt"
+          grep -q '^== ブラウザ (alterego-web) \[hidden\]$' "$state/windows.txt"
+          # the mouse: red from the palette, a stroke, then 見せる; the chat gets 「絵を見て: path」 and AlterEgo looks
+          ALTEREGO_HEADLESS=1024x768 ALTEREGO_SNAPSHOT="$state/shot.ppm" ALTEREGO_DUMP="$state/windows.txt" \
+          ALTEREGO_SCRIPT=$'\n' ALTEREGO_SCRIPT_WIN=paint \
+          ALTEREGO_SCRIPT_MOUSE="247,101,d;247,101,u;300,300,d;400,350,m;400,350,u;787,101,d;787,101,u" \
+          ALTEREGO_FONT=src/screen/font.hex ALTEREGO_DICT=src/screen/dict.txt \
+          ALTEREGO_AGENT="$PWD/src/agent/alterego" ALTEREGO_SHELL=/bin/sh ALTEREGO_WEB="$PWD/src/web/alterego-web" \
+          ALTEREGO_STATE="$state" ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml \
+          timeout 60 ./src/screen/alterego-screen
+          cat "$state/windows.txt"
+          ls "$state/paint"/paint-*.ppm
+          grep -q '^user> 絵を見て: .*/paint/paint-.*\.ppm$' "$state/windows.txt"
+          grep -q '^AlterEgo: （じっと見る）……赤の絵だ。' "$state/windows.txt"
+          grep -q '^(paint 640x400, 1 strokes)' "$state/windows.txt"
+          python3 scripts/ppm2png.py "$state/shot.ppm" screenshot-show.png
       - name: Upload the desktop screenshots
         uses: actions/upload-artifact@v4
         with:
@@ -184,6 +245,7 @@ jobs:
             screenshot.png
             screenshot-browser.png
             screenshot-paint.png
+            screenshot-show.png
       - name: Init refuses to run outside PID 1
         run: |
           if ./src/init/alteregos-init; then echo "init should have refused"; exit 1; fi

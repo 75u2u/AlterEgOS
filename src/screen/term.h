@@ -34,6 +34,12 @@ struct term {
     int utf_len, utf_need;
     int dirty;
     uint8_t attr, fg;           /* current SGR state for new characters */
+    /* OSC strings (ESC ] ... BEL/ST) are kept so the desktop can act on
+     * the agent's requests: "7700;open;paint" and the like. osc_ready is
+     * set when a complete one is in `osc`; the reader clears it. */
+    char osc[512];
+    int osc_len;
+    int osc_ready;
 };
 
 int  term_init(struct term *t, int cols, int rows);

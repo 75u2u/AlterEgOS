@@ -204,7 +204,8 @@ int main(void)
         }
         /* Something to do to the OS (the time, a file, a command, an ability
          * it was taught) is done, not learned as a word. */
-        if (skills_handle(sk, brain_detect_lang(line, brain_lang(b)), brain_own_name(b, &p), brain_user_name(b, &p), line, reply, sizeof reply)) {
+        if (skills_handle(sk, b, brain_detect_lang(line, brain_lang(b)), brain_own_name(b, &p), brain_user_name(b, &p), line, reply, sizeof reply)) {
+            if (store) save_self(b, &p);                      /* it may have remembered something (a picture) */
             printf("%s: %s\n", brain_own_name(b, &p), reply);
             continue;
         }
