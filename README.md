@@ -17,7 +17,7 @@ PID 1 がエージェント「AlterEgo」を起動し、bash も systemd も X �
 ## いまの状態(MVP 3 日目まで)
 
 - `src/init/`: PID 1。擬似 FS のマウント、ホスト名と lo、eth0 と DHCP クライアント(busybox udhcpc)、エージェント(コンソールが画面なら代わりにデスクトップ)と tty2 シェルの起動と再起動、シャットダウン
-- `src/screen/`: 画面。`/dev/fb0` に直接描き、キーボードとマウスは evdev から読む。窓は 3 つ、AlterEgo(チャット)、busybox sh(シェル)、ブラウザ(上のバーの「ブラウザ」ボタンで開く)で、それぞれ小さな端末エミュレータ + pty(太字・下線・反転・16 色に対応)。マウスで窓の前後・移動・閉じる、上のバーのボタンで窓を開き直す・かな入力の切り替え・再起動・電源オフ。フォントは東雲 16px(パブリックドメイン、`font.hex`)。日本語入力はローマ字→ひらがな(`kana.c`、大文字で打つとカタカナ)の上に漢字変換(`ime.c` + `dict.c`、辞書は SKK-JISYO.L を `scripts/mkdict.py` で変換した `dict.txt`、約 15 万語、GPL-2.0-or-later)。Space で変換・次の候補、数字で候補を選ぶ、Enter で確定、Backspace で変換をやめる。送りがな(「たべる」→「食べる」)と、文の先頭だけの変換(「わたしは」→「私」+「は」)もできる。切り替えは 半角/全角 キー、Ctrl+Space、またはバーのボタン
+- `src/screen/`: 画面。`/dev/fb0` に直接描き、キーボードとマウスは evdev から読む。アプリは窓で、上のバーの「アプリ」メニューから開く(開いている窓には ● が付く。Alt+Tab でも順に回る)。アプリは `screen.c` の表 `g_apps[]` に 1 行足すと増える。いまは 4 つ: AlterEgo(チャット)、シェル(busybox sh)、ブラウザ(alterego-web)はそれぞれ小さな端末エミュレータ + pty(太字・下線・反転・16 色に対応)、ペイント(`paint.c`)はデスクトップ自身が描く窓で、12 色のパレット・太さ 3 段階・消しゴム・全部消す・保存(PPM を記憶ディスクの `alterego/paint/` へ)。マウスで窓の前後・移動・閉じる、バーのボタンでかな入力の切り替え・再起動・電源オフ。フォントは東雲 16px(パブリックドメイン、`font.hex`)。日本語入力はローマ字→ひらがな(`kana.c`、大文字で打つとカタカナ)の上に漢字変換(`ime.c` + `dict.c`、辞書は SKK-JISYO.L を `scripts/mkdict.py` で変換した `dict.txt`、約 15 万語、GPL-2.0-or-later)。Space で変換・次の候補、数字で候補を選ぶ、Enter で確定、Backspace で変換をやめる。送りがな(「たべる」→「食べる」)と、文の先頭だけの変換(「わたしは」→「私」+「は」)もできる。切り替えは 半角/全角 キー、Ctrl+Space、またはバーのボタン
 - `src/web/`: ブラウザ `alterego-web`。文字だけの自前ブラウザで、JavaScript も CSS も画像も扱わない。HTTP/1.1 クライアント(`net.c`: chunked、リダイレクト 5 回まで、https は mbedTLS で `/etc/ssl/certs/ca-certificates.crt` を使って証明書を検証)、HTML → 文字(`html.c`: 見出しは太字、リストは「・」と番号、表は 2 スペース区切り、画像は alt、リンクは下線つきで `[番号]`、文字実体参照)、端末の幅での折り返し(全角は 2 セル)。キーは `j`/`k`/矢印で 1 行、Space/PageDown/PageUp で 1 ページ、`g`/`G` で上下端、**番号 + Enter でリンクへ**、`o` で URL、`s` で検索(DuckDuckGo)、`b`/`f` で戻る/進む、`r` で読み込み直し、`?` で説明、`q` で終了。`alterego-web --dump URL` はページを文字にして標準出力に出す(スクリプトやテスト用)。UTF-8 のページだけ正しく出る(Shift_JIS や EUC-JP は化ける)。`file:` も開ける
 - `src/agent/`: エージェント。頭は外部のモデルや API に頼らない自前のもの(`brain.c`)で、会話で育てる
   - **言葉**: user の発話から文字 n-gram(1〜3 文字の文脈。英語は単語 n-gram 1〜2 語)と語彙を学び、似た発話を検索して「そのとき user が次に言ったこと」を返したり、n-gram で文を作ったりする。聞く相手は user だけなので、話す言葉も user の言葉になる
@@ -192,7 +192,7 @@ x86_64 は `image` ワークフローの中で、QEMU の `-kernel` 起動(記�
 ```
 src/init/        PID 1(C、静的リンク)
 src/agent/       エージェント(C、静的リンク): 頭 brain.c、OS を動かす手 skills.c、体調 body.c、保存 store.c
-src/screen/      画面: フレームバッファのデスクトップ、端末エミュレータ、evdev 入力、ローマ字かな変換、漢字変換(SKK 辞書)、フォント
+src/screen/      画面: フレームバッファのデスクトップ(アプリメニュー)、端末エミュレータ、ペイント、evdev 入力、ローマ字かな変換、漢字変換(SKK 辞書)、フォント
 src/web/         ブラウザ(C、静的リンク + mbedTLS): HTTP クライアント net.c、HTML → 文字 html.c、URL url.c、端末 UI main.c
 buildroot/       BR2_EXTERNAL ツリー(configs/、board/alteregos/、package/alteregos/)
 scripts/         build.sh、run-qemu.sh、boot-test.sh、boot-test-efi.sh、mkfont.py、mkdict.py、ppm2png.py、web-test/(ブラウザのテストサーバーと pty 操作)
@@ -208,3 +208,4 @@ build/           Buildroot 本体と成果物(git 管理外)
 5. btrfs スナップショットと「戻して」、tty2 の退路。通しで使ってみる
 6. ~~画面: フレームバッファのデスクトップにチャットとシェルの窓、マウス操作、ローマ字かな入力、漢字変換~~(スクロールバック、画面サイズに合わせた窓のリサイズ、文節ごとの変換と学習は続く)
 7. ~~ブラウザ: 文字だけの自前ブラウザをプリインストール~~(フォーム送信、Shift_JIS、会話から「〇〇を開いて」で窓に出すのは続く)
+8. ~~アプリメニューとペイント~~(会話から「ペイントを開いて」、絵を AlterEgo に見せる、はこれから)

@@ -2,11 +2,11 @@
  * AlterEgOS screen: the desktop.
  *
  * Draws straight onto the framebuffer and reads keyboards and mice from
- * evdev; no X, no Wayland, no toolkit. Three windows, each a small
- * terminal on its own pty: AlterEgo (the agent, chat), a shell (busybox
- * sh, the escape hatch) and the browser (alterego-web, hidden until its
- * button is pressed). Windows are raised, focused, moved and closed with
- * the mouse; the bar at the top has buttons to reopen them, to switch the
+ * evdev; no X, no Wayland, no toolkit. Apps are windows: a small terminal
+ * on its own pty (AlterEgo the agent, a busybox shell, the browser
+ * alterego-web) or something the desktop draws itself (paint). Windows are
+ * raised, focused, moved and closed with the mouse; the bar at the top has
+ * the アプリ menu that opens or raises any app, a button to switch the
  * Japanese input (romaji to kana, Space for kanji) on and off, and to
  * reboot or power off (PID 1 does the actual work when signalled).
  *
@@ -36,6 +36,7 @@
 #include "font.h"
 #include "ime.h"
 #include "input.h"
+#include "paint.h"
 #include "pty.h"
 #include "term.h"
 
@@ -46,7 +47,7 @@
 #define BAR_H     24
 #define TITLE_H   20
 #define PAD       4
-#define WIN_MAX   3
+#define WIN_MAX   4
 
 #define C_DESK    0x1E2430
 #define C_BAR     0x2B3340
@@ -69,11 +70,32 @@ static const uint32_t g_ansi[16] = {
     0x3A4250, 0xE06C75, 0x98C379, 0xE5C07B, 0x61AFEF, 0xC678DD, 0x56B6C2, 0xD0D0D0,
     0x7F8894, 0xFF8A94, 0xB5E890, 0xFFD866, 0x7FC8FF, 0xE0A0FF, 0x7FE0E8, 0xFFFFFF };
 
-enum { W_CHAT = 0, W_SHELL = 1, W_WEB = 2 };
+enum { W_CHAT = 0, W_SHELL = 1, W_WEB = 2, W_PAINT = 3 };
+enum { WK_TERM = 0, WK_PAINT = 1 };
+
+/* An app is a window: a program on a pty, or something drawn by the
+ * desktop itself (paint). The アプリ menu lists this table; adding an
+ * app is adding a row (and a W_ index above). */
+struct app {
+    const char *name;           /* in the menu */
+    const char *title;          /* on the window */
+    int kind;
+    const char *program;        /* WK_TERM: the program; ALTEREGO_<env> overrides it */
+    const char *env;
+    int visible_at_start;
+};
+static const struct app g_apps[WIN_MAX] = {
+    [W_CHAT]  = { "AlterEgo (チャット)", "AlterEgo", WK_TERM, "/usr/bin/alterego", "ALTEREGO_AGENT", 1 },
+    [W_SHELL] = { "シェル", "シェル (busybox sh)", WK_TERM, "/bin/sh", "ALTEREGO_SHELL", 1 },
+    [W_WEB]   = { "ブラウザ", "ブラウザ (alterego-web)", WK_TERM, "/usr/bin/alterego-web", "ALTEREGO_WEB", 0 },
+    [W_PAINT] = { "ペイント", "ペイント", WK_PAINT, NULL, NULL, 0 },
+};
 
 struct win {
     const char *title;
-    struct term term;
+    int kind;                   /* WK_* */
+    struct paint paint;         /* WK_PAINT */
+    struct term term;           /* WK_TERM */
     int fd;
     pid_t pid;
     int x, y, cols, rows;
@@ -83,7 +105,7 @@ struct win {
 };
 
 struct button { int x, y, w, h; int action; };
-enum { A_NONE, A_CHAT, A_SHELL, A_WEB, A_KANA, A_REBOOT, A_POWEROFF };
+enum { A_NONE, A_MENU, A_KANA, A_REBOOT, A_POWEROFF };
 
 static struct canvas g_cv;
 static struct fb g_fb;
@@ -92,11 +114,15 @@ static struct input g_in;
 static struct dict g_dict;
 static struct ime g_ime;
 static struct win g_win[WIN_MAX];
-static int g_order[WIN_MAX] = { W_SHELL, W_WEB, W_CHAT };     /* bottom to top */
+static int g_order[WIN_MAX] = { W_SHELL, W_PAINT, W_WEB, W_CHAT };     /* bottom to top */
 static int g_focus = W_CHAT;
 static int g_kana_mode = 0;
 static int g_mx, g_my;                                  /* mouse pointer */
 static int g_drag_win = -1, g_drag_dx, g_drag_dy;
+static int g_paint_win = -1;                            /* a stroke in progress in this window */
+static int g_menu_open;                                 /* the アプリ menu is shown */
+static int g_menu_x, g_menu_y, g_menu_w, g_menu_h;      /* where it is */
+static char g_save_dir[512];                            /* where paint saves pictures */
 static struct button g_btn[8];
 static int g_nbtn;
 static int g_dirty = 1;
@@ -140,8 +166,8 @@ static void kmsg(const char *fmt, ...)
 
 /* ---- windows */
 
-static int win_w(const struct win *w) { return w->cols * FONT_W + 2 * PAD + 2; }
-static int win_h(const struct win *w) { return TITLE_H + w->rows * FONT_H + 2 * PAD + 2; }
+static int win_w(const struct win *w) { return (w->kind == WK_PAINT ? paint_width(&w->paint) : w->cols * FONT_W) + 2 * PAD + 2; }
+static int win_h(const struct win *w) { return TITLE_H + (w->kind == WK_PAINT ? paint_height(&w->paint) : w->rows * FONT_H) + 2 * PAD + 2; }
 
 static char **child_env(void)
 {
@@ -166,6 +192,7 @@ static char **child_env(void)
 
 static void win_spawn(struct win *w)
 {
+    if (w->kind != WK_TERM) return;
     w->fd = pty_spawn(w->argv, child_env(), w->cols, w->rows, &w->pid);
     w->respawn_at = 0;
     if (w->fd < 0) { kmsg("%s: cannot start %s: %s", w->title, w->argv[0], strerror(errno)); w->respawn_at = time(NULL) + 5; }
@@ -183,7 +210,20 @@ static void win_init(struct win *w, const char *title, char *const argv[], int c
     w->y = y;
     w->fd = -1;
     w->visible = 1;
+    w->kind = WK_TERM;
     term_init(&w->term, cols, rows);
+}
+
+static void win_init_paint(struct win *w, const char *title, int pw, int ph, int x, int y)
+{
+    memset(w, 0, sizeof *w);
+    w->title = title;
+    w->kind = WK_PAINT;
+    w->x = x;
+    w->y = y;
+    w->fd = -1;
+    w->visible = 1;
+    paint_init(&w->paint, pw, ph);
 }
 
 static void raise_win(int i)
@@ -225,12 +265,12 @@ static void draw_bar(void)
     g_nbtn = 0;
     int x = 8;
     x = font_text(&g_font, &g_cv, x, 4, "AlterEgOS " ALTEREGOS_VERSION, C_BARTEXT, C_BAR) + 16;
-    button(x, 3, "AlterEgo", g_focus == W_CHAT && g_win[W_CHAT].visible, A_CHAT);
-    x += font_text_width(&g_font, "AlterEgo") + 12 + 6;
-    button(x, 3, "シェル", g_focus == W_SHELL && g_win[W_SHELL].visible, A_SHELL);
-    x += font_text_width(&g_font, "シェル") + 12 + 6;
-    button(x, 3, "ブラウザ", g_focus == W_WEB && g_win[W_WEB].visible, A_WEB);
-    x += font_text_width(&g_font, "シェル") + 12 + 16;
+    g_menu_x = x;
+    g_menu_y = BAR_H;
+    button(x, 3, "アプリ", g_menu_open, A_MENU);
+    x += font_text_width(&g_font, "アプリ") + 12 + 6;
+    const struct win *fw = &g_win[g_focus];
+    if (fw->visible) x = font_text(&g_font, &g_cv, x + 4, 4, fw->title, C_BARTEXT, C_BAR) + 16;   /* what has the keyboard */
     button(x, 3, g_kana_mode ? "あ かな入力" : "A 英数入力", g_kana_mode, A_KANA);
 
     char clock[16];
@@ -246,6 +286,34 @@ static void draw_bar(void)
     button(right - w, 3, "再起動", 0, A_REBOOT);
     right -= w + 16;
     font_text(&g_font, &g_cv, right - font_text_width(&g_font, clock), 4, clock, C_BARTEXT, C_BAR);
+}
+
+/* The アプリ menu: one row per app, a mark on the ones that are open. */
+static void draw_menu(void)
+{
+    if (!g_menu_open) return;
+    int w = 0;
+    for (int i = 0; i < WIN_MAX; i++) { int tw = font_text_width(&g_font, g_apps[i].name); if (tw > w) w = tw; }
+    g_menu_w = w + 16 + 16 + 12;
+    g_menu_h = WIN_MAX * (FONT_H + 6) + 8;
+    canvas_fill(&g_cv, g_menu_x, g_menu_y, g_menu_w, g_menu_h, C_POPUP);
+    canvas_frame(&g_cv, g_menu_x, g_menu_y, g_menu_w, g_menu_h, C_BORDER);
+    for (int i = 0; i < WIN_MAX; i++) {
+        int y = g_menu_y + 4 + i * (FONT_H + 6);
+        int hot = g_mx >= g_menu_x && g_mx < g_menu_x + g_menu_w && g_my >= y && g_my < y + FONT_H + 6;
+        if (hot) canvas_fill(&g_cv, g_menu_x + 1, y, g_menu_w - 2, FONT_H + 6, C_BTN_ON);
+        uint32_t bg = hot ? C_BTN_ON : C_POPUP;
+        font_text(&g_font, &g_cv, g_menu_x + 8, y + 3, g_win[i].visible ? "●" : " ", C_BARTEXT, bg);
+        font_text(&g_font, &g_cv, g_menu_x + 8 + 16 + 4, y + 3, g_apps[i].name, C_BARTEXT, bg);
+    }
+}
+
+/* The menu row under the pointer, or -1. */
+static int menu_at(int x, int y)
+{
+    if (!g_menu_open || x < g_menu_x || x >= g_menu_x + g_menu_w || y < g_menu_y + 4) return -1;
+    int i = (y - g_menu_y - 4) / (FONT_H + 6);
+    return i >= 0 && i < WIN_MAX ? i : -1;
 }
 
 static void draw_win(int i)
@@ -265,6 +333,7 @@ static void draw_win(int i)
         font_text(&g_font, &g_cv, w->x + 8, w->y + 2 + font_text_width(&g_font, w->title) + 16, "(停止中)", C_BARTEXT, focused ? C_TITLE : C_TITLE_U);
     }
     int ox = w->x + 1 + PAD, oy = w->y + TITLE_H + PAD;
+    if (w->kind == WK_PAINT) { paint_draw(&w->paint, &g_cv, &g_font, ox, oy); return; }
     for (int y = 0; y < w->rows; y++) {
         for (int x = 0; x < w->cols; x++) {
             const struct cell *c = w->term.cells + (size_t)y * w->cols + x;
@@ -328,6 +397,7 @@ static void render(void)
     canvas_fill(&g_cv, 0, 0, g_cv.w, g_cv.h, C_DESK);
     for (int k = 0; k < WIN_MAX; k++) draw_win(g_order[k]);
     draw_bar();
+    draw_menu();
     draw_pointer();
     if (g_fb.mem) fb_blit(&g_fb, &g_cv);
     else if (g_snapshot) write_ppm(g_snapshot);
@@ -349,9 +419,7 @@ static int win_at(int x, int y)
 static void action(int a)
 {
     switch (a) {
-    case A_CHAT: raise_win(W_CHAT); break;
-    case A_SHELL: raise_win(W_SHELL); break;
-    case A_WEB: raise_win(W_WEB); break;
+    case A_MENU: g_menu_open = !g_menu_open; g_dirty = 1; break;
     case A_KANA: {
         char out[IME_PRE + DICT_CAND];
         size_t n = ime_flush(&g_ime, out, sizeof out);
@@ -368,7 +436,18 @@ static void action(int a)
 
 static void on_click(int down)
 {
-    if (!down) { g_drag_win = -1; return; }
+    if (!down) {
+        g_drag_win = -1;
+        if (g_paint_win >= 0) { paint_release(&g_win[g_paint_win].paint); g_paint_win = -1; }
+        return;
+    }
+    if (g_menu_open) {                                   /* a click chooses an app or closes the menu */
+        int i = menu_at(g_mx, g_my);
+        g_menu_open = 0;
+        g_dirty = 1;
+        if (i >= 0) raise_win(i);
+        if (i >= 0 || g_my >= BAR_H) return;
+    }
     if (g_my < BAR_H) {
         for (int i = 0; i < g_nbtn; i++) {
             const struct button *b = &g_btn[i];
@@ -386,6 +465,9 @@ static void on_click(int down)
         g_drag_win = i;
         g_drag_dx = g_mx - w->x;
         g_drag_dy = g_my - w->y;
+    } else if (w->kind == WK_PAINT) {
+        paint_press(&w->paint, &g_font, g_mx - (w->x + 1 + PAD), g_my - (w->y + TITLE_H + PAD), g_save_dir);
+        if (w->paint.drawing) g_paint_win = i;
     }
     raise_win(i);
 }
@@ -399,6 +481,7 @@ static void on_key(const struct input_ev *e)
         return;
     }
     if (!w->visible) { w->visible = 1; g_dirty = 1; }
+    if (w->kind != WK_TERM) return;                       /* paint has no keys */
     const char *t = e->text;
     if (g_kana_mode && !e->ctrl) {
         char out[IME_PRE + DICT_CAND + 16];
@@ -425,6 +508,10 @@ static void on_input(const struct input_ev *e)
         if (g_my < 0) g_my = 0;
         if (g_mx >= g_cv.w) g_mx = g_cv.w - 1;
         if (g_my >= g_cv.h) g_my = g_cv.h - 1;
+        if (g_paint_win >= 0) {
+            struct win *w = &g_win[g_paint_win];
+            paint_move(&w->paint, g_mx - (w->x + 1 + PAD), g_my - (w->y + TITLE_H + PAD));
+        }
         if (g_drag_win >= 0) {
             struct win *w = &g_win[g_drag_win];
             w->x = g_mx - g_drag_dx;
@@ -484,6 +571,7 @@ static void dump_windows(const char *path)
     if (!f) return;
     for (int i = 0; i < WIN_MAX; i++) {
         fprintf(f, "== %s\n", g_win[i].title);
+        if (g_win[i].kind == WK_PAINT) { fprintf(f, "(paint %dx%d, %d strokes)\n", g_win[i].paint.w, g_win[i].paint.h, g_win[i].paint.strokes); continue; }
         char row[1024];
         for (int y = 0; y < g_win[i].rows; y++) { term_row(&g_win[i].term, y, row, sizeof row); fprintf(f, "%s\n", row); }
     }
@@ -552,20 +640,26 @@ int main(void)
     if (crows < 5) crows = 5;
     int scols = ccols > 72 ? 72 : ccols, srows = crows > 18 ? 18 : crows;
 
-    static char *const chat_argv[] = { "/usr/bin/alterego", NULL };
-    static char *const shell_argv[] = { "/bin/sh", NULL };
-    static char *const web_argv[] = { "/usr/bin/alterego-web", NULL };
-    static char agent_path[256], shell_path[256], web_path[256];
-    char *const *ca = chat_argv, *const *sa_ = shell_argv, *const *wa = web_argv;
-    static char *alt_chat[2], *alt_shell[2], *alt_web[2];
+    /* The programs behind the terminal windows, from the app table (an
+     * ALTEREGO_* variable swaps one for a host build in the tests). */
+    static char paths[WIN_MAX][256];
+    static char *argvs[WIN_MAX][2];
     const char *p;
-    if ((p = getenv("ALTEREGO_AGENT"))) { snprintf(agent_path, sizeof agent_path, "%s", p); alt_chat[0] = agent_path; ca = alt_chat; }
-    if ((p = getenv("ALTEREGO_SHELL"))) { snprintf(shell_path, sizeof shell_path, "%s", p); alt_shell[0] = shell_path; sa_ = alt_shell; }
-    if ((p = getenv("ALTEREGO_WEB"))) { snprintf(web_path, sizeof web_path, "%s", p); alt_web[0] = web_path; wa = alt_web; }
+    for (int i = 0; i < WIN_MAX; i++) {
+        if (g_apps[i].kind != WK_TERM) continue;
+        p = g_apps[i].env ? getenv(g_apps[i].env) : NULL;
+        snprintf(paths[i], sizeof paths[i], "%s", p ? p : g_apps[i].program);
+        argvs[i][0] = paths[i];
+    }
+    /* Where paint saves: the memory directory given to the agent, else the
+     * memory disk the agent mounts, else /root. */
+    if ((p = getenv("ALTEREGO_STATE"))) snprintf(g_save_dir, sizeof g_save_dir, "%s/paint", p);
+    else if (access("/run/alterego/esp/alterego", W_OK) == 0) snprintf(g_save_dir, sizeof g_save_dir, "/run/alterego/esp/alterego/paint");
+    else snprintf(g_save_dir, sizeof g_save_dir, "/root/paint");
 
-    win_init(&g_win[W_CHAT], "AlterEgo", ca, ccols, crows, 16, BAR_H + 12);
+    win_init(&g_win[W_CHAT], g_apps[W_CHAT].title, argvs[W_CHAT], ccols, crows, 16, BAR_H + 12);
     int sw = scols * FONT_W + 2 * PAD + 2, sh = TITLE_H + srows * FONT_H + 2 * PAD + 2;
-    win_init(&g_win[W_SHELL], "シェル (busybox sh)", sa_, scols, srows, g_fb.w - sw - 16, g_fb.h - sh - 16);
+    win_init(&g_win[W_SHELL], g_apps[W_SHELL].title, argvs[W_SHELL], scols, srows, g_fb.w - sw - 16, g_fb.h - sh - 16);
     /* The browser: as wide as the screen allows (up to 100 columns), hidden
      * until the ブラウザ button is pressed; it starts on its help page. */
     int wcols = (g_fb.w - 48) / FONT_W, wrows = (g_fb.h - BAR_H - 60) / FONT_H;
@@ -574,8 +668,13 @@ int main(void)
     if (wcols < 20) wcols = 20;
     if (wrows < 5) wrows = 5;
     int ww = wcols * FONT_W + 2 * PAD + 2;
-    win_init(&g_win[W_WEB], "ブラウザ (alterego-web)", wa, wcols, wrows, g_fb.w - ww - 16, BAR_H + 12);
-    g_win[W_WEB].visible = 0;
+    win_init(&g_win[W_WEB], g_apps[W_WEB].title, argvs[W_WEB], wcols, wrows, g_fb.w - ww - 16, BAR_H + 12);
+    /* Paint: a 640x400 sheet when the screen has room, smaller otherwise. */
+    int pw = g_fb.w - 80 > 640 ? 640 : g_fb.w - 80, ph = g_fb.h - BAR_H - 120 > 400 ? 400 : g_fb.h - BAR_H - 120;
+    if (pw < 200) pw = 200;
+    if (ph < 120) ph = 120;
+    win_init_paint(&g_win[W_PAINT], g_apps[W_PAINT].title, pw, ph, (g_fb.w - pw - 2 * PAD - 2) / 2, BAR_H + 40);
+    for (int i = 0; i < WIN_MAX; i++) g_win[i].visible = g_apps[i].visible_at_start;
     g_mx = g_fb.w / 2;
     g_my = g_fb.h / 2;
     ime_init(&g_ime, g_dict.idx ? &g_dict : NULL);
@@ -589,7 +688,9 @@ int main(void)
     long script_next = now_ms() + 1500;
     size_t script_pos = 0;
     if (g_script && getenv("ALTEREGO_SCRIPT_KANA")) g_kana_mode = 1;
-    if (g_script && (p = getenv("ALTEREGO_SCRIPT_WIN"))) raise_win(strcmp(p, "web") == 0 ? W_WEB : strcmp(p, "shell") == 0 ? W_SHELL : W_CHAT);
+    if (g_script && (p = getenv("ALTEREGO_SCRIPT_WIN")))
+        raise_win(strcmp(p, "web") == 0 ? W_WEB : strcmp(p, "shell") == 0 ? W_SHELL : strcmp(p, "paint") == 0 ? W_PAINT : W_CHAT);
+    if (g_script && getenv("ALTEREGO_SCRIPT_MENU")) g_menu_open = 1;      /* show the menu in the screenshot */
     while (!g_stop) {
         if (g_script && now_ms() >= script_next) {
             if (g_script[script_pos]) {
