@@ -12,6 +12,12 @@
  * While it waits for a line it keeps feeling its body (body.c: the load of
  * the machine) and says so unprompted when it gets tired. A reset command
  * (「リセット」) erases everything it learned and it is newborn again.
+ *
+ * It also speaks up on its own: after a while of silence it asks something
+ * or brings up a topic (ALTEREGO_IDLE_S seconds, 180 by default, once per
+ * silence), and at the greeting it says how long the user has been away.
+ * What that needs beyond the utterance log (closeness, mood, questions
+ * asked and answered, boots, when it last heard the user) is bond.txt.
  */
 
 #define _GNU_SOURCE
@@ -34,9 +40,12 @@
 #define SELF_FILE   "personality.txt"
 #define SKILLS_FILE "skills.txt"
 #define ACTIONS_FILE "actions.log"
+#define BOND_FILE   "bond.txt"
+#define DRAWINGS_FILE "drawings.txt"
 
 #define BODY_EVERY_MS   2000    /* how often the body is felt while waiting for a line */
 #define REMARK_GAP_S    60      /* unprompted remarks about the body, at most one per */
+#define IDLE_DEFAULT_S  180     /* silence before it speaks up on its own (ALTEREGO_IDLE_S) */
 
 /* One line to the kernel log so a serial console, dmesg or the CI boot test
  * can see the agent came up even when its own tty is the VGA screen.
@@ -89,6 +98,24 @@ static void save_self(struct brain *b, const struct persona *p)
     brain_memories(b, p, mem, sizeof mem);
     snprintf(all, sizeof all, "%s\n%s", status, mem);
     store_write(SELF_FILE, all);
+    char bond[8192];
+    brain_bond_save(b, (long)time(NULL), bond, sizeof bond);
+    store_write(BOND_FILE, bond);
+}
+
+static void load_bond(struct brain *b, const char *store)
+{
+    char *bond = store ? store_read_all(BOND_FILE) : NULL;
+    brain_bond_load(b, bond ? bond : "", (long)time(NULL));
+    free(bond);
+}
+
+/* After the greeting: how long the user was away, what was talked about last. */
+static void welcome(struct brain *b, const struct persona *p)
+{
+    char line[512];
+    brain_welcome(b, p, line, sizeof line);
+    if (line[0]) { printf("%s: %s\n", brain_own_name(b, p), line); fflush(stdout); }
 }
 
 /* 「リセット」: forget everything, be newborn again */
@@ -112,6 +139,8 @@ static void forget_everything(void)
     store_remove(SELF_FILE);
     store_remove(SKILLS_FILE);
     store_remove(ACTIONS_FILE);
+    store_remove(BOND_FILE);
+    store_remove(DRAWINGS_FILE);
 }
 
 /* Wait up to `ms` for input; 1 when a line can be read, 0 on timeout */
@@ -143,14 +172,20 @@ int main(void)
         char *log = store_read_all(LOG_FILE);
         if (log) { brain_load_log(b, log); free(log); }
     }
+    load_bond(b, store);
     struct body body;
     body_init(&body);
     brain_set_body(b, body.level);
     time_t last_remark = 0;
+    int idle_s = getenv("ALTEREGO_IDLE_S") ? atoi(getenv("ALTEREGO_IDLE_S")) : IDLE_DEFAULT_S;
+    time_t quiet_since = time(NULL);
+    int idle_said = 0;
 
     setvbuf(stdout, NULL, _IOLBF, 0);
     kmsg_up(&p, brain_turns(b));
     greet(&p, b, store);
+    welcome(b, &p);
+    if (store) save_self(b, &p);                      /* this boot counts */
 
     char reply[4096];
     char *line = NULL;
@@ -163,8 +198,15 @@ int main(void)
             enum body_level before = body.level;
             body_sample(&body);
             brain_set_body(b, body.level);
-            if (body.level == before) continue;
             time_t now = time(NULL);
+            /* Silence: say something of its own, once, after idle_s seconds. */
+            if (!idle_said && idle_s > 0 && now - quiet_since >= idle_s && brain_idle_line(b, &p, reply, sizeof reply)) {
+                idle_said = 1;
+                printf("\n%s: %s\n%s> ", brain_own_name(b, &p), reply, brain_user_name(b, &p));
+                fflush(stdout);
+                if (store) save_self(b, &p);
+            }
+            if (body.level == before) continue;
             if ((body.level >= BODY_TIRED && before < BODY_TIRED && now - last_remark >= REMARK_GAP_S) ||
                 (body.level == BODY_FINE && before >= BODY_TIRED)) {
                 body_remark(&body, before, brain_lang(b) == BRAIN_EN, reply, sizeof reply);
@@ -177,6 +219,8 @@ int main(void)
         }
         ssize_t n = getline(&line, &cap, stdin);
         if (n < 0) break;                      /* EOF: let init respawn us */
+        quiet_since = time(NULL);
+        idle_said = 0;
         while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = '\0';
         if (strcmp(line, "exit") == 0) break;
         if (line[0] == '\0') continue;
@@ -190,6 +234,7 @@ int main(void)
             sk = skills_new();
             if (!b || !sk) return 1;
             brain_set_body(b, body.level);
+            load_bond(b, NULL);
             printf("%s: %s\n", p.name, en ? "(The memories are erased. I am newborn again.)" : "（記憶を消しました。生まれたてに戻ります。）");
             greet(&p, b, store);
             continue;
@@ -219,6 +264,7 @@ int main(void)
         printf("%s: %s\n", brain_own_name(b, &p), reply);
     }
     free(line);
+    if (store) save_self(b, &p);                      /* when it last heard the user */
 
     if (brain_turns(b) > 0) {
         brain_status(b, &p, reply, sizeof reply);

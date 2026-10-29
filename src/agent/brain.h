@@ -65,4 +65,22 @@ void brain_remember_note(struct brain *b, const char *text);
 /* What it remembers, one fact per line. */
 void brain_memories(const struct brain *b, const struct persona *p, char *out, size_t cap);
 
+/* Closeness to the user (0..100) and its name (初対面 … 家族同然), the
+ * short-lived mood (-100..100). Both grow out of the conversation and are
+ * shown in the status. */
+int  brain_intimacy(const struct brain *b);
+int  brain_mood(const struct brain *b);
+const char *brain_intimacy_word(const struct brain *b);
+/* Something it says on its own into a silence (a question, a topic);
+ * 1 when `out` has a line. Ask once per silence. */
+int  brain_idle_line(struct brain *b, const struct persona *p, char *out, size_t cap);
+/* A line for the greeting about the time apart ("3 日ぶりだね") or the last
+ * topic; "" when there is nothing to say. */
+void brain_welcome(struct brain *b, const struct persona *p, char *out, size_t cap);
+/* The part of the mind the utterance log cannot rebuild (bond.txt):
+ * intimacy, mood, which questions were asked and what was answered, how
+ * many boots, when it last heard the user. Load after the log. */
+void brain_bond_load(struct brain *b, const char *text, long now);
+void brain_bond_save(const struct brain *b, long now, char *out, size_t cap);
+
 #endif

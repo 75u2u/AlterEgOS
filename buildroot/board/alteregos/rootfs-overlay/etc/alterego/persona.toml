@@ -1,7 +1,7 @@
 # AlterEgo の種。この OS の中で唯一、人(user = このOSの持ち主)が書き、エージェントは自分では書き換えないファイル。
 # ここにあるのは出発点だけで、性格は無い。AlterEgo は生まれたときは何も知らず(言葉も、性格も、記憶も)、
 # user との会話から学んで育つ。学んだ結果は起動した USB/ディスクの alterego/ に溜まり(utterances.txt、
-# personality.txt、会話で覚えたできること skills.txt、やったことの記録 actions.log)、ここは変わらない。
+# personality.txt、会話で覚えたできること skills.txt、やったことの記録 actions.log、親密度や気分 bond.txt)、ここは変わらない。
 # 頭は外部のモデルや API に頼らない自前のもの(src/agent/brain.c)。手(OS を動かす)は src/agent/skills.c。
 
 [identity]

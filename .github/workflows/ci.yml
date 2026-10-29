@@ -192,6 +192,45 @@ jobs:
           echo "$out" | grep -q $'^user> AlterEgo: I drew a robot in paint. Have a look, user.\e\]7700;draw;paint;k 000000 p 5 .* k 000000 c .* k 000000 l '
           echo "$out" | grep -q '^user> AlterEgo: Forgot how to draw robot.'
           echo "$out" | grep -q '^user> AlterEgo: I can draw: circle, line, square, triangle, star, heart, face, sun, house, tree, flower, mountain, cat, fish, car, ボール\.'
+      - name: Agent smoke test (closeness, questions of its own, speaking up into silence)
+        run: |
+          state=$(mktemp -d)
+          run() { ALTEREGO_STATE="$state" ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml ./src/agent/alterego; }
+          # at the tenth conversation it can talk, and asks its first question (the user's name); the answer is taken as the name
+          out=$(printf '君の名前はエゴにする\nコーヒーが好き\nえらいね！\n今日はいい天気\n散歩に行った\n猫を見た\nかわいかった\n公園でお茶した\n楽しかった！\n猫が好き\nゆうやだよ\nステータス\nexit\n' | run)
+          echo "$out"
+          echo "$out" | grep -q '^user> エゴ: 猫！猫、知ってる。 そういえば、userの名前をまだ聞いてなかった。なんて呼べばいい？$'
+          echo "$out" | grep -q '^user> エゴ: ゆうや。覚えた。これからはゆうやって呼ぶね。$'
+          echo "$out" | grep -q '^ゆうや> エゴ: 名前: エゴ。ゆうやの名前: ゆうや。成長: 片言(11 回話した.*親密度: 顔見知り(18)。気分: ふつう。'
+          grep -q '^intimacy=18$' "$state/bond.txt"
+          grep -q '^user_name=ゆうや$' "$state/bond.txt"
+          # the name survives a reboot (it is not in the log); the next question comes after a while, the answer is remembered; scolding costs closeness and mood
+          out=$(printf 'ラーメンを食べた\nおいしかった\n本を読んだ\n面白かった\nまた明日\n眠い\nおやすみ\nカレー\nだめだよ\nステータス\n何を覚えてる？\nexit\n' | run)
+          echo "$out"
+          echo "$out" | grep -q '^ゆうや> エゴ: おやすみ、ゆうや。 ゆうやの好きな食べ物って、何？$'
+          echo "$out" | grep -q '^ゆうや> エゴ: カレーかあ。覚えておくね、ゆうや。教えてくれてありがとう。$'
+          echo "$out" | grep -q '^ゆうや> エゴ: 好き: コーヒー ／ 好き: 猫 ／ あなたのこと: 好きな食べ物: カレー$'
+          echo "$out" | grep -q '親密度: 顔見知り(28)。'
+          grep -q '^fact	about	好きな食べ物: カレー$' "$state/bond.txt"
+          # three days away: it says so at the greeting
+          sed -i "s/^last_seen=.*/last_seen=$(( $(date +%s) - 3*86400 ))/" "$state/bond.txt"
+          out=$(printf 'ただいま\nexit\n' | run)
+          echo "$out"
+          echo "$out" | grep -q '^エゴ: 3 日ぶりだね、ゆうや。$'
+          # silence: after ALTEREGO_IDLE_S seconds it speaks up on its own, once
+          out=$( (printf 'こんにちは\n'; sleep 5; printf 'exit\n') | ALTEREGO_IDLE_S=2 run)
+          echo "$out"
+          echo "$out" | grep -q '^エゴ: ゆうやの好きな色は何色？$'
+          test "$(echo "$out" | grep -c '^エゴ: ゆうやの')" = 1
+          # 「私のこと、好き？」 answered yes; 「君は何が好き？」; English status with closeness
+          sed -i "s/^pending=.*/pending=6/" "$state/bond.txt"
+          out=$(printf 'うん、好きだよ\n君は何が好き？\nhow are you?\nstatus\nexit\n' | run)
+          echo "$out"
+          echo "$out" | grep -q '^ゆうや> エゴ: えへへ……うれしい。私もゆうやのこと、好きだよ。$'
+          echo "$out" | grep -q '^ゆうや> エゴ: まだよくわからない……けど、ゆうやと話すのは好き。ゆうやは何が好き？$'
+          echo "$out" | grep -q 'Closeness: friends (3[0-9]). Mood: '
+          # reset forgets the bond too
+          printf 'リセット\nステータス\nexit\n' | run | grep -q '親密度: 初対面(0)。'
       - name: Screen checks (terminal emulator, romaji to kana, paint, kanji dictionary and conversion, font)
         run: make -C src/screen test
       - name: Browser checks (URL resolution, HTML to text, layout)

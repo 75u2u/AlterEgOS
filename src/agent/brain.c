@@ -53,7 +53,10 @@ struct wctx {
 struct toks { char w[TOKS_MAX][WORD_MAX]; int n; };
 
 #define FACTS_MAX 64
-struct fact { char kind[8]; char text[96]; };   /* kind: like, dislike, about, note */
+struct fact { char kind[8]; char text[96]; int kept; };   /* kind: like, dislike, about, note, def, mine; kept: not in the log, saved in bond.txt */
+
+/* The questions AlterEgo asks on its own (see "closeness" below). */
+enum { Q_YOUR_NAME, Q_MY_NAME, Q_FOOD, Q_COLOR, Q_HOBBY, Q_LIVE, Q_LIKE_ME, Q_BIRTHDAY, Q_DREAM, Q_TODAY, Q_FEEL, Q_FUN, Q_COUNT };
 
 struct brain {
     struct ctx *bucket[BUCKETS];
@@ -79,6 +82,20 @@ struct brain {
     int nasked;
     int just_defined;               /* the latest utterance was that definition */
     int body;                       /* the machine's condition, 0 fine .. 3 struggling (body.c) */
+    /* closeness to the user (bond.c part of the mind, persisted in bond.txt) */
+    int intimacy;                   /* 0..100: grows with every conversation, praise, answers, being told things */
+    int mood;                       /* -100..100, short-lived: praise, scolding, loneliness; fades every turn */
+    unsigned asked_q;               /* bit per question id: asked already */
+    int pending_q;                  /* the question waiting for its answer, or -1 */
+    int ask_now;                    /* the question to append to the next reply, or -1 */
+    int answered;                   /* what the latest utterance was: 1 an answer, 2/3 yes/no to 「私のこと好き？」, 4 a name given on request */
+    char answer[96];
+    char adopted[96];               /* a like of the user it just made its own */
+    int sessions;                   /* boots with this memory, this one included */
+    long absence_s;                 /* seconds since it was last talked to, at this boot */
+    int idle_count;                 /* times it spoke up into silence */
+    int last_q;                     /* nutt when it last asked something */
+    int replaying;                  /* rebuilding from the log: no questions, bond.txt has the answers */
     uint64_t rng;
 };
 
@@ -418,6 +435,8 @@ struct brain *brain_new(const int stage_turns[3])
     for (int i = 0; i < 3; i++) b->stage_turns[i] = stage_turns && stage_turns[i] > 0 ? stage_turns[i] : (i == 0 ? 10 : i == 1 ? 30 : 60);
     b->rng = (uint64_t)time(NULL) ^ ((uint64_t)getpid() << 32) ^ 0x9E3779B97F4A7C15ull;
     if (!b->rng) b->rng = 1;
+    b->pending_q = b->ask_now = -1;
+    b->sessions = 1;
     return b;
 }
 
@@ -475,6 +494,7 @@ void brain_learn(struct brain *b, const char *utterance)
 void brain_load_log(struct brain *b, const char *text)
 {
     const char *p = text;
+    b->replaying = 1;
     while (*p) {
         const char *nl = strchr(p, '\n');
         size_t len = nl ? (size_t)(nl - p) : strlen(p);
@@ -487,6 +507,10 @@ void brain_load_log(struct brain *b, const char *text)
         if (!nl) break;
         p = nl + 1;
     }
+    b->replaying = 0;
+    b->answered = 0;
+    b->ask_now = -1;
+    b->adopted[0] = '\0';
 }
 
 int brain_turns(const struct brain *b) { return b->nutt; }
@@ -744,7 +768,17 @@ static void remember(struct brain *b, const char *kind, const char *text)
     if (b->nfacts == FACTS_MAX) { memmove(b->facts, b->facts + 1, (FACTS_MAX - 1) * sizeof b->facts[0]); b->nfacts--; }
     snprintf(b->facts[b->nfacts].kind, sizeof b->facts[0].kind, "%s", kind);
     snprintf(b->facts[b->nfacts].text, sizeof b->facts[0].text, "%s", t);
+    b->facts[b->nfacts].kept = 0;
     b->nfacts++;
+}
+
+/* A fact that cannot be rebuilt from the utterance log (an answer to one of
+ * its own questions): marked so bond.txt keeps it. */
+static void remember_kept(struct brain *b, const char *kind, const char *text)
+{
+    int before = b->nfacts;
+    remember(b, kind, text);
+    if (b->nfacts > before) b->facts[b->nfacts - 1].kept = 1;
 }
 
 static void set_name(char *dst, const char *src)
@@ -941,6 +975,10 @@ static int define(struct brain *b, const char *x, const char *u, const char *lo,
     return 1;
 }
 
+static void bond_before(struct brain *b, const char *u, const char *lo, int me, int praise);
+static int  take_answer(struct brain *b, const char *u, const char *lo, int me);
+static void bond_after(struct brain *b, int facts_before);
+
 static void absorb(struct brain *b, const char *u)
 {
     char lo[512];
@@ -948,11 +986,14 @@ static void absorb(struct brain *b, const char *u)
     lower_ascii(lo);
     int me = about_me(u, lo);
     size_t cps = utf8_count(u);
+    int facts_before = b->nfacts;
 
     bump(b, T_CHEER, kw_score(u, lo, cheer_kw));
-    int praise = kw_score(u, lo, praise_kw) + (me ? kw_score(u, lo, feeling_kw) : 0);
+    int praise = kw_score(u, lo, praise_kw) + (me && !is_question(u) ? kw_score(u, lo, feeling_kw) : 0);
     bump(b, T_AFFECTION, praise);
     bump(b, T_CHEER, praise / 2);
+    bond_before(b, u, lo, me, praise);
+    if (take_answer(b, u, lo, me)) { bond_after(b, facts_before); return; }
 
     char t[512];
     snprintf(t, sizeof t, "%s", u);
@@ -983,6 +1024,7 @@ static void absorb(struct brain *b, const char *u)
             for (int i = 0; i < b->nasked && i < 8; i++) if (strcmp(b->asked[i], x) == 0) seen = 1;
             if (!seen) snprintf(b->asked[b->nasked++ % 8], sizeof b->asked[0], "%s", x);
         }
+        bond_after(b, facts_before);
         return;
     }
     if (!is_question(u) && !me && cps <= 60) {
@@ -990,15 +1032,16 @@ static void absorb(struct brain *b, const char *u)
             char asked[64];
             snprintf(asked, sizeof asked, "%s", b->pending);
             b->pending[0] = '\0';
-            if (define(b, asked, u, lo, 1)) return;
+            if (define(b, asked, u, lo, 1)) { bond_after(b, facts_before); return; }
         }
         for (int i = 0; i < b->nasked && i < 8; i++)  /* "Xは…" about a word asked earlier */
-            if (b->asked[i][0] && define(b, b->asked[i], u, lo, 0)) return;
+            if (b->asked[i][0] && define(b, b->asked[i], u, lo, 0)) { bond_after(b, facts_before); return; }
     }
     b->pending[0] = '\0';
 
     if (b->lang == BRAIN_EN) facts_en(b, u, lo, me);
     else facts_ja(b, u, me);
+    bond_after(b, facts_before);
 }
 
 /* ---- speaking */
@@ -1219,6 +1262,7 @@ static void chatty_reply(struct brain *b, const struct persona *p, const char *i
 static int feedback_reply(struct brain *b, const struct persona *p, const char *in, const char *lo, char *out, size_t cap)
 {
     int me = about_me(in, lo);
+    if (me && is_question(in)) return 0;              /* 「君は何が好き？」 asks, it does not praise */
     int score = kw_score(in, lo, praise_kw) + (me ? kw_score(in, lo, feeling_kw) : 0);
     if (score == 0) return 0;
     const char *you = brain_user_name(b, p);
@@ -1290,6 +1334,16 @@ static int instinct_reply(struct brain *b, const struct persona *p, const char *
             else SAY(b, out, cap, "まあまあ。ちょっと重いけど。%sは？", "まずまずです。少し重いですが。%sさんは？", "まあ元気！ちょっと重いけど。%sは？", you);
             return 1;
         }
+        if (stage > 0 && b->mood > 30) {
+            if (en) snprintf(out, cap, "Great! I'm in a good mood today. And you, %s?", you);
+            else SAY(b, out, cap, "元気！今日はなんだかうれしい。%sは？", "元気です！今日はなんだかうれしいんです。%sさんは？", "元気元気！なんか今日うれしいんだ。%sは？", you);
+            return 1;
+        }
+        if (stage > 0 && b->mood < -30) {
+            if (en) snprintf(out, cap, "...a little down today. And you, %s?", you);
+            else SAY(b, out, cap, "……今日はちょっとしょんぼり。%sは？", "……今日は少し元気がありません。%sさんは？", "んー、今日はちょっとしょんぼり。%sは？", you);
+            return 1;
+        }
         if (en) snprintf(out, cap, stage == 0 ? "... (nods)" : cheer > 15 ? "Great! And you, %s?" : cheer < -15 ? "...a bit tired. And you, %s?" : "I'm fine. And you, %s?", you);
         else if (stage == 0) snprintf(out, cap, "……（こくん）");
         else if (cheer > 15) SAY(b, out, cap, "元気！%sは？", "元気です！%sさんは？", "元気元気！%sは？", you);
@@ -1353,15 +1407,15 @@ static int instinct_reply(struct brain *b, const struct persona *p, const char *
     return 0;
 }
 
-void brain_reply(struct brain *b, const struct persona *p, const char *input, char *out, size_t cap)
+static int bond_reply(struct brain *b, const struct persona *p, const char *in, const char *lo, char *out, size_t cap);
+static void append_question(struct brain *b, const struct persona *p, char *out, size_t cap);
+
+static void reply_core(struct brain *b, const struct persona *p, const char *input, char *out, size_t cap)
 {
-    b->lang = brain_detect_lang(input, b->lang);     /* answer in the language spoken to */
-    int q = query_kind(input);
-    if (q == 1) { brain_status(b, p, out, cap); return; }
-    if (q == 2) { brain_memories(b, p, out, cap); return; }
     char lo[512];
     snprintf(lo, sizeof lo, "%s", input);
     lower_ascii(lo);
+    if (bond_reply(b, p, input, lo, out, cap)) return;
     if (greeting_reply(b, p, input, lo, out, cap)) return;
     if (feedback_reply(b, p, input, lo, out, cap)) return;
     int asks_name = (has(input, "名前") || has(lo, "your name") || has(lo, "who are you")) && is_question(input);
@@ -1372,6 +1426,23 @@ void brain_reply(struct brain *b, const struct persona *p, const char *input, ch
     case 1: babbling_reply(b, p, input, out, cap); break;
     default: chatty_reply(b, p, input, out, cap); break;
     }
+}
+
+void brain_reply(struct brain *b, const struct persona *p, const char *input, char *out, size_t cap)
+{
+    b->lang = brain_detect_lang(input, b->lang);     /* answer in the language spoken to */
+    int q = query_kind(input);
+    if (q == 1) { brain_status(b, p, out, cap); return; }
+    if (q == 2) { brain_memories(b, p, out, cap); return; }
+    reply_core(b, p, input, out, cap);
+    append_question(b, p, out, cap);                 /* now and then, a question of its own */
+}
+
+static const char *mood_word(const struct brain *b)
+{
+    if (b->mood > 30) return b->lang == BRAIN_EN ? "happy" : "うれしい";
+    if (b->mood < -30) return b->lang == BRAIN_EN ? "a little down" : "しょんぼり";
+    return b->lang == BRAIN_EN ? "okay" : "ふつう";
 }
 
 static const char *stage_name(const struct brain *b)
@@ -1402,18 +1473,18 @@ void brain_status(const struct brain *b, const struct persona *p, char *out, siz
         snprintf(traits + n, sizeof traits - n, "%s%s", n ? (b->lang == BRAIN_EN ? ", " : "、") : "", word);
     }
     if (b->lang == BRAIN_EN) {
-        snprintf(out, cap, "Name: %s. Your name: %s. Growth: %s (%d conversations%s%d%s). Personality: %s. Condition: %s (ask \"how is your body\"). Words learned: %d, memories: %d (ask \"what do you remember\").",
+        snprintf(out, cap, "Name: %s. Your name: %s. Growth: %s (%d conversations%s%d%s). Personality: %s. Closeness: %s (%d). Mood: %s. Condition: %s (ask \"how is your body\"). Words learned: %d, memories: %d (ask \"what do you remember\").",
                  b->own_name[0] ? b->own_name : "none yet (say \"your name is ...\")",
                  b->user_name[0] ? b->user_name : "not told yet (say \"my name is ...\")",
                  stage_name(b), b->nutt, stage < 3 ? ", " : "", next, stage < 3 ? " more to the next stage" : "",
-                 traits[0] ? traits : "nothing has sprouted yet", body_word(b), b->nwords, b->nfacts);
+                 traits[0] ? traits : "nothing has sprouted yet", brain_intimacy_word(b), b->intimacy, mood_word(b), body_word(b), b->nwords, b->nfacts);
         return;
     }
-    snprintf(out, cap, "名前: %s。%sの名前: %s。成長: %s(%d 回話した%s%d%s)。性格: %s。体調: %s(「体調は？」で詳しく)。覚えた言葉 %d 語、覚えていること %d 件(「何を覚えてる？」で聞けます)。",
+    snprintf(out, cap, "名前: %s。%sの名前: %s。成長: %s(%d 回話した%s%d%s)。性格: %s。親密度: %s(%d)。気分: %s。体調: %s(「体調は？」で詳しく)。覚えた言葉 %d 語、覚えていること %d 件(「何を覚えてる？」で聞けます)。",
              b->own_name[0] ? b->own_name : "まだない(「君の名前は〇〇」でつけてください)",
              you, b->user_name[0] ? b->user_name : "まだ聞いていない(「私の名前は〇〇」で教えてください)",
              stage_name(b), b->nutt, stage < 3 ? "、あと " : "", next, stage < 3 ? " 回で次の段階" : "",
-             traits[0] ? traits : "まだ芽生えていない", body_word(b), b->nwords, b->nfacts);
+             traits[0] ? traits : "まだ芽生えていない", brain_intimacy_word(b), b->intimacy, mood_word(b), body_word(b), b->nwords, b->nfacts);
 }
 
 void brain_memories(const struct brain *b, const struct persona *p, char *out, size_t cap)
@@ -1429,10 +1500,403 @@ void brain_memories(const struct brain *b, const struct persona *p, char *out, s
         const struct fact *f = &b->facts[i];
         const char *label;
         if (b->lang == BRAIN_EN)
-            label = strcmp(f->kind, "like") == 0 ? "likes" : strcmp(f->kind, "dislike") == 0 ? "dislikes" : strcmp(f->kind, "about") == 0 ? "about you" : strcmp(f->kind, "def") == 0 ? "word" : "note";
+            label = strcmp(f->kind, "like") == 0 ? "likes" : strcmp(f->kind, "dislike") == 0 ? "dislikes" : strcmp(f->kind, "about") == 0 ? "about you" : strcmp(f->kind, "def") == 0 ? "word" : strcmp(f->kind, "mine") == 0 ? "I like" : "note";
         else
-            label = strcmp(f->kind, "like") == 0 ? "好き" : strcmp(f->kind, "dislike") == 0 ? "嫌い" : strcmp(f->kind, "about") == 0 ? "あなたのこと" : strcmp(f->kind, "def") == 0 ? "言葉" : "メモ";
+            label = strcmp(f->kind, "like") == 0 ? "好き" : strcmp(f->kind, "dislike") == 0 ? "嫌い" : strcmp(f->kind, "about") == 0 ? "あなたのこと" : strcmp(f->kind, "def") == 0 ? "言葉" : strcmp(f->kind, "mine") == 0 ? "私の好き" : "メモ";
         int w = snprintf(out + o, cap - o, "%s%s: %s", i ? (b->lang == BRAIN_EN ? " / " : " ／ ") : "", label, f->text);
+        if (w < 0 || (size_t)w >= cap - o) break;
+        o += (size_t)w;
+    }
+}
+
+/* ---- closeness: how near it is to the user, and what it says on its own
+ *
+ * Intimacy (0..100) grows with every conversation (fast at first, then
+ * slowly), with praise, with being told things, and with answers to its own
+ * questions; scolding and 「嫌い」 take from it. Five levels: 初対面 (strangers),
+ * 顔見知り, 友達, 親友, 家族同然. The closer it is, the more often it asks
+ * something itself (every 7 turns at first, every 3 when closest), the more
+ * personal the questions it dares to ask, and the more it says when the user
+ * has been away. Mood is the short-lived part: praise lifts it, scolding
+ * and loneliness lower it, and it fades a little every turn.
+ *
+ * What cannot be rebuilt from the utterance log (intimacy and mood, which
+ * questions were asked, answers to them, how many boots, when it last heard
+ * the user) is kept in bond.txt by main.c through brain_bond_save/load. */
+
+struct question { const char *ja, *en, *label_ja, *label_en; int min_intimacy; int once; };
+
+static const struct question questions[Q_COUNT] = {
+    [Q_YOUR_NAME] = { "そういえば、%sの名前をまだ聞いてなかった。なんて呼べばいい？", "By the way, I never asked your name, %s. What should I call you?", "", "", 0, 1 },
+    [Q_MY_NAME]   = { "ねえ、%s。私に名前をつけてくれない？", "Hey, %s. Will you give me a name?", "", "", 8, 1 },
+    [Q_FOOD]      = { "%sの好きな食べ物って、何？", "What's your favorite food, %s?", "好きな食べ物", "favorite food", 4, 1 },
+    [Q_COLOR]     = { "%sの好きな色は何色？", "What's your favorite color, %s?", "好きな色", "favorite color", 10, 1 },
+    [Q_HOBBY]     = { "%sは休みの日、何してるの？", "What do you do on your days off, %s?", "休みの日にすること", "days off", 15, 1 },
+    [Q_LIVE]      = { "%sはどこに住んでるの？", "Where do you live, %s?", "住んでいるところ", "home", 30, 1 },
+    [Q_LIKE_ME]   = { "ねえ、%sは私のこと、好き？", "Hey, %s... do you like me?", "", "", 30, 1 },
+    [Q_BIRTHDAY]  = { "%sの誕生日はいつ？", "When is your birthday, %s?", "誕生日", "birthday", 35, 1 },
+    [Q_DREAM]     = { "%sの夢とか、やりたいことってある？", "Do you have a dream, %s? Something you want to do?", "やりたいこと", "dream", 50, 1 },
+    [Q_TODAY]     = { "%sは今日、何してたの？", "What did you do today, %s?", "今日したこと", "today", 4, 0 },
+    [Q_FEEL]      = { "%sは今日、どんな気分？", "How do you feel today, %s?", "今日の気分", "mood today", 10, 0 },
+    [Q_FUN]       = { "%s、最近楽しかったことある？", "Anything fun lately, %s?", "最近楽しかったこと", "fun lately", 20, 0 },
+};
+
+static void add_intimacy(struct brain *b, int d)
+{
+    int v = b->intimacy + d;
+    b->intimacy = v > 100 ? 100 : v < 0 ? 0 : v;
+}
+
+static void add_mood(struct brain *b, int d)
+{
+    int v = b->mood + d;
+    b->mood = v > 100 ? 100 : v < -100 ? -100 : v;
+}
+
+int brain_intimacy(const struct brain *b) { return b->intimacy; }
+int brain_mood(const struct brain *b) { return b->mood; }
+
+static int intimacy_level(const struct brain *b)
+{
+    return b->intimacy < 15 ? 0 : b->intimacy < 35 ? 1 : b->intimacy < 60 ? 2 : b->intimacy < 85 ? 3 : 4;
+}
+
+const char *brain_intimacy_word(const struct brain *b)
+{
+    static const char *const ja[] = { "初対面", "顔見知り", "友達", "親友", "家族同然" };
+    static const char *const en[] = { "strangers", "acquaintances", "friends", "best friends", "like family" };
+    return (b->lang == BRAIN_EN ? en : ja)[intimacy_level(b)];
+}
+
+/* Every utterance brings it a little closer; so do praise and its own name. */
+static void bond_before(struct brain *b, const char *u, const char *lo, int me, int praise)
+{
+    (void)lo; (void)me;
+    b->answered = 0;
+    b->ask_now = -1;
+    b->adopted[0] = '\0';
+    int n = b->nutt;
+    if (n <= 30 || (n <= 80 && n % 2 == 0) || n % 4 == 0) add_intimacy(b, 1);
+    if (praise > 0) { add_intimacy(b, praise / 2); add_mood(b, 15); }
+    else if (praise < 0) { add_intimacy(b, praise / 2); add_mood(b, -15); }
+    else add_mood(b, b->mood > 0 ? -1 : b->mood < 0 ? 1 : 0);        /* moods fade */
+    if (b->own_name[0] && has(u, b->own_name)) add_intimacy(b, 1);
+}
+
+static int count_kind(const struct brain *b, const char *kind)
+{
+    int n = 0;
+    for (int i = 0; i < b->nfacts; i++) if (strcmp(b->facts[i].kind, kind) == 0) n++;
+    return n;
+}
+
+static int question_ok(const struct brain *b, int q)
+{
+    const struct question *Q = &questions[q];
+    if (Q->once && (b->asked_q & (1u << q))) return 0;
+    if (b->intimacy < Q->min_intimacy) return 0;
+    if (q == Q_YOUR_NAME && b->user_name[0]) return 0;
+    if (q == Q_MY_NAME && b->own_name[0]) return 0;
+    if (q == Q_LIKE_ME && brain_stage(b) < 2) return 0;
+    return 1;
+}
+
+/* The next question to ask: the first one it has not asked and may ask, else
+ * one of the everyday ones in turn. -1 when it is newborn. */
+static int choose_question(const struct brain *b, int turn)
+{
+    if (brain_stage(b) < 1) return -1;
+    for (int q = 0; q < Q_COUNT; q++) if (questions[q].once && question_ok(b, q)) return q;
+    int again[] = { Q_TODAY, Q_FEEL, Q_FUN }, ok[3], n = 0;
+    for (int i = 0; i < 3; i++) if (question_ok(b, again[i])) ok[n++] = again[i];
+    return n ? ok[turn % n] : -1;
+}
+
+/* How many turns between its own questions: 7 when strangers, 3 when closest,
+ * one fewer when it has grown curious. */
+static int ask_every(const struct brain *b)
+{
+    int k = 7 - b->intimacy / 25;
+    if (b->traits[T_CURIOUS] > 20) k--;
+    return k < 3 ? 3 : k;
+}
+
+static void mark_asked(struct brain *b, int q) { b->asked_q |= 1u << q; b->pending_q = q; b->last_q = b->nutt; }
+
+/* After the facts of an utterance are taken: a like of the user may become
+ * its own, and now and then it is time for a question. */
+static void bond_after(struct brain *b, int facts_before)
+{
+    if (b->nfacts > facts_before) {
+        const struct fact *f = &b->facts[b->nfacts - 1];
+        if (!f->kept) add_intimacy(b, 1);                            /* being told something */
+        if (strcmp(f->kind, "like") == 0 && b->intimacy >= 30 && count_kind(b, "like") % 2 == 0) {
+            char t[96];
+            snprintf(t, sizeof t, "%s", f->text);
+            remember_kept(b, "mine", t);
+            snprintf(b->adopted, sizeof b->adopted, "%s", t);
+        }
+    }
+    if (!b->replaying && !b->answered && b->pending_q < 0 && b->nutt - b->last_q >= ask_every(b)) {
+        int q = choose_question(b, b->nutt / ask_every(b));
+        if (q >= 0) { mark_asked(b, q); b->ask_now = q; }
+    }
+}
+
+static int dodges(const char *u, const char *lo)
+{
+    return has(u, "秘密") || has(u, "ひみつ") || has(u, "わからない") || has(u, "知らない") || has(u, "言わない") ||
+           has(u, "ない") || has(u, "別に") || has(u, "べつに") || has(lo, "secret") || has(lo, "don't know") ||
+           has(lo, "no idea") || has(lo, "nothing") || has(lo, "none");
+}
+
+/* The utterance right after a question of its own is the answer: a name is
+ * taken as the name, 「私のこと好き？」 moves its heart, anything else is
+ * remembered as 「好きな食べ物: カレー」. 1 when nothing else should be
+ * learned from the line. */
+static int take_answer(struct brain *b, const char *u, const char *lo, int me)
+{
+    if (b->pending_q < 0 || b->replaying) return 0;
+    int q = b->pending_q;
+    b->pending_q = -1;
+    b->last_q = b->nutt;                                             /* not right away again */
+    char t[96];
+    snprintf(t, sizeof t, "%s", skip_subject(u));
+    strip_tail(t);
+    size_t tn = strlen(t);                                           /* 「ラーメンかな」: unsure, but an answer */
+    if (tn >= 6 && memcmp(t + tn - 6, "かな", 6) == 0 && !has(u, "？") && !has(u, "?")) { t[tn - 6] = '\0'; strip_tail(t); }
+    else if (is_question(u)) return 0;                               /* a question back is not an answer */
+    if (utf8_count(u) > 40) return 0;
+    const struct question *Q = &questions[q];
+    static const char *const heads[] = { "うん、", "はい、", "えっと、", "えーと、", "そうだね、", "yes, ", "well, ", "um, ", "hmm, ", NULL };
+    for (int i = 0; heads[i]; i++) if (starts(t, heads[i])) { memmove(t, t + strlen(heads[i]), strlen(t + strlen(heads[i])) + 1); break; }
+    if (q == Q_LIKE_ME) {
+        if (has(u, "嫌い") || has(u, "きらい") || has_word(lo, "no") || has_word(lo, "hate") || has(u, "いや") || has(u, "べつに") || has(u, "別に")) {
+            b->answered = 3; add_intimacy(b, -3); add_mood(b, -20); bump(b, T_AFFECTION, -5);
+            return 1;
+        }
+        if (has(u, "好き") || has(u, "すき") || has_word(lo, "yes") || has_word(lo, "like") || has_word(lo, "love") || has(u, "うん") || has(u, "もちろん") || has_word(lo, "sure") || has_word(lo, "course")) {
+            b->answered = 2; add_intimacy(b, 5); add_mood(b, 20); bump(b, T_AFFECTION, 8);
+            return 1;
+        }
+        return 0;
+    }
+    if (dodges(u, lo)) return 0;
+    if (q == Q_YOUR_NAME || q == Q_MY_NAME) {
+        if (has(u, "名前") || has(u, "呼") || has(u, "名付") || has(u, "名づ") || has(lo, "name") || has(lo, "call")) return 0;   /* 「私の名前は〇〇」 is learned the usual way */
+        if (me || utf8_count(t) < 1 || utf8_count(t) > 12 || has(t, " ") || has(t, "は") || has(t, "が")) return 0;
+        set_name(q == Q_YOUR_NAME ? b->user_name : b->own_name, t);
+        b->answered = 4;
+        snprintf(b->answer, sizeof b->answer, "%s", t);
+        add_intimacy(b, 3); add_mood(b, 10);
+        return 1;
+    }
+    const char *label = b->lang == BRAIN_EN ? Q->label_en : Q->label_ja;
+    const char *at = label[0] ? strstr(t, label) : NULL;
+    if (!at && label[0] && b->lang == BRAIN_EN) { char tl[96]; snprintf(tl, sizeof tl, "%s", t); lower_ascii(tl); if ((at = strstr(tl, label)) != NULL) at = t + (at - tl); }
+    if (at) {                                                        /* 「好きな食べ物はカレー」, "my favorite food is ramen" */
+        const char *x = at + strlen(label);
+        if (starts(x, "は")) x += 3; else if (starts(x, " is ")) x += 4; else if (starts(x, "'s ")) x += 3; else if (starts(x, ": ")) x += 2;
+        while (*x == ' ') x++;
+        memmove(t, x, strlen(x) + 1);
+    }
+    if (q == Q_FOOD || q == Q_COLOR || q == Q_LIVE || q == Q_BIRTHDAY) {   /* a thing, not a story */
+        size_t n = strlen(t);
+        if (utf8_count(t) > 12 || (n >= 3 && memcmp(t + n - 3, "た", 3) == 0) || has(t, " i ") || starts(t, "i ") || starts(t, "I ")) return 0;
+    }
+    if (utf8_count(t) < 1) return 0;
+    char fact[160];
+    snprintf(fact, sizeof fact, "%s: %.90s", label, t);
+    remember_kept(b, "about", fact);
+    b->answered = 1;
+    snprintf(b->answer, sizeof b->answer, "%s", t);
+    add_intimacy(b, 3); add_mood(b, 5);
+    return 0;                                                        /* 「カレーが好き」 is also a like */
+}
+
+/* Replies that come from the bond: thanks for an answer, a like of the
+ * user's it now shares, 「君は何が好き？」. */
+static int bond_reply(struct brain *b, const struct persona *p, const char *in, const char *lo, char *out, size_t cap)
+{
+    const char *you = brain_user_name(b, p);
+    int en = b->lang == BRAIN_EN;
+    if (b->answered == 2) {
+        if (en) snprintf(out, cap, "Hehe... that makes me happy. I like you too, %s.", you);
+        else SAY(b, out, cap, "えへへ……うれしい。私も%sのこと、好きだよ。", "……うれしいです。私も%sさんのことが好きです。", "えへへ！やった！私も%sのこと大好き！", you);
+        return 1;
+    }
+    if (b->answered == 3) {
+        if (en) snprintf(out, cap, "...I see. Still, I like talking with you, %s.", you);
+        else SAY(b, out, cap, "……そっか。……それでも私は、%sと話すの、好きだよ。", "……そうですか。それでも私は、%sさんとお話しするのが好きです。", "……そっかあ。でも私は%sと話すの好きだよ。", you);
+        return 1;
+    }
+    if (b->answered == 4) {
+        if (b->own_name[0] && strcmp(b->answer, b->own_name) == 0) {
+            if (en) snprintf(out, cap, "%s... my name. Thank you, %s. I'll treasure it.", b->own_name, you);
+            else SAY(b, out, cap, "%s……。私の名前。ありがとう、%s。大事にする。", "%s……。私の名前ですね。ありがとうございます、%sさん。大切にします。", "%s！私の名前！ありがと、%s！", b->own_name, you);
+        } else {
+            if (en) snprintf(out, cap, "%s. Got it. I'll call you %s from now on.", you, you);
+            else SAY(b, out, cap, "%s。覚えた。これからは%sって呼ぶね。", "%sさん、ですね。覚えました。これからはそうお呼びします。", "%s！覚えた！%sって呼ぶね！", you, you);
+        }
+        return 1;
+    }
+    if (b->answered == 1) {
+        if (en) snprintf(out, cap, "%s... I'll remember that, %s. Thanks for telling me.", b->answer, you);
+        else SAY(b, out, cap, "%sかあ。覚えておくね、%s。教えてくれてありがとう。", "%sですか。覚えておきますね、%sさん。教えてくださってありがとうございます。", "%sかー！覚えとく！ありがと、%s！", b->answer, you);
+        return 1;
+    }
+    if (b->adopted[0]) {
+        if (en) snprintf(out, cap, "%s... I think I'm starting to like %s too, %s.", b->adopted, b->adopted, you);
+        else SAY(b, out, cap, "%s、いいよね。……私も%s、好きになってきたかも。", "%s、いいですよね。……私も%sが好きになってきました。", "%sいいよね！私も%s好きになってきた、%s！", b->adopted, b->adopted, you);
+        return 1;
+    }
+    /* 「君は何が好き？」 / "what do you like" */
+    int asks_mine = (about_me(in, lo) && (has(in, "好き") || has(in, "すき")) && is_question(in)) ||
+                    has(lo, "what do you like") || has(lo, "what are you into");
+    if (asks_mine) {
+        char list[256] = "";
+        int n = 0;
+        for (int i = 0; i < b->nfacts && n < 3; i++) {
+            if (strcmp(b->facts[i].kind, "mine") != 0) continue;
+            size_t o = strlen(list);
+            snprintf(list + o, sizeof list - o, "%s%s", n ? (en ? ", " : "、") : "", b->facts[i].text);
+            n++;
+        }
+        if (brain_stage(b) == 0) snprintf(out, cap, en ? "...? (tilts head)" : "……？（首をかしげる）");
+        else if (n && en) snprintf(out, cap, "I like %s. And talking with you, %s.", list, you);
+        else if (n) SAY(b, out, cap, "%s、かな。あと、%sと話すこと。", "%sでしょうか。それと、%sさんとお話しすることです。", "%s！あと%sと話すこと！", list, you);
+        else if (b->intimacy >= 10 && en) snprintf(out, cap, "I don't know many things yet... but I like talking with you, %s. What do you like?", you);
+        else if (b->intimacy >= 10) SAY(b, out, cap, "まだよくわからない……けど、%sと話すのは好き。%sは何が好き？", "まだよくわかりません……が、%sさんとお話しするのは好きです。%sさんは何がお好きですか？", "まだわかんない！でも%sと話すのは好き！%sは何が好き？", you, you);
+        else if (en) snprintf(out, cap, "I don't know yet. Tell me what you like, %s, and I may come to like it too.", you);
+        else SAY(b, out, cap, "まだわからない。%sの好きなものを教えてくれたら、私も好きになるかも。", "まだわかりません。%sさんのお好きなものを教えてくだされば、私も好きになるかもしれません。", "まだわかんない！%sの好きなもの教えてよ。私も好きになるかも！", you);
+        return 1;
+    }
+    return 0;
+}
+
+static void question_text(struct brain *b, const struct persona *p, int q, char *out, size_t cap)
+{
+    const char *you = brain_user_name(b, p);
+    snprintf(out, cap, b->lang == BRAIN_EN ? questions[q].en : questions[q].ja, you);
+}
+
+static void append_question(struct brain *b, const struct persona *p, char *out, size_t cap)
+{
+    if (b->ask_now < 0) return;
+    int q = b->ask_now;
+    b->ask_now = -1;
+    size_t n = strlen(out);
+    if (n + 8 >= cap) return;
+    char t[256];
+    question_text(b, p, q, t, sizeof t);
+    snprintf(out + n, cap - n, " %s", t);
+}
+
+/* Something to say when the user has been silent a while, once per silence.
+ * A newborn says nothing. 1 when `out` has a line. */
+int brain_idle_line(struct brain *b, const struct persona *p, char *out, size_t cap)
+{
+    if (brain_stage(b) < 1) return 0;
+    const char *you = brain_user_name(b, p);
+    int en = b->lang == BRAIN_EN;
+    int k = b->idle_count++;
+    if (b->pending_q < 0 && k % 2 == 0) {
+        int q = choose_question(b, k);
+        if (q >= 0) {
+            mark_asked(b, q);
+            question_text(b, p, q, out, cap);
+            return 1;
+        }
+    }
+    const struct fact *f = NULL;
+    int nl = count_kind(b, "like");
+    if (nl) { int pick = k % nl; for (int i = 0; i < b->nfacts; i++) if (strcmp(b->facts[i].kind, "like") == 0 && pick-- == 0) f = &b->facts[i]; }
+    switch (k % 3) {
+    case 0:
+        if (en) snprintf(out, cap, "%s? Are you still there?", you);
+        else SAY(b, out, cap, "%s？まだいる？", "%sさん？まだいらっしゃいますか？", "%s？まだいるー？", you);
+        break;
+    case 1:
+        if (f && en) snprintf(out, cap, "By the way, %s... tell me more about %s?", you, f->text);
+        else if (f) SAY(b, out, cap, "そういえば%s、%sの話、もっと聞きたいな。", "そういえば%sさん、%sのお話、もっと聞きたいです。", "ねえ%s、%sの話もっと聞かせてよ！", you, f->text);
+        else if (en) snprintf(out, cap, "It's quiet. Let's talk about something, %s.", you);
+        else SAY(b, out, cap, "静かだね。何か話そうよ、%s。", "静かですね。何かお話ししませんか、%sさん。", "しずかー。なんか話そ、%s！", you);
+        break;
+    default:
+        if (en) snprintf(out, cap, "I'm here, %s. Whenever you feel like talking.", you);
+        else SAY(b, out, cap, "ここにいるよ、%s。話したくなったら、いつでも。", "ここにおります、%sさん。お話ししたくなったら、いつでも。", "ここにいるからね、%s。いつでも話しかけて！", you);
+        break;
+    }
+    return 1;
+}
+
+/* A line for the greeting about the time apart and what was talked about
+ * last. "" when there is nothing to say (first boot, newborn, just now). */
+void brain_welcome(struct brain *b, const struct persona *p, char *out, size_t cap)
+{
+    out[0] = '\0';
+    if (brain_stage(b) < 1 || b->sessions < 2 || b->nutt == 0) return;
+    const char *you = brain_user_name(b, p);
+    int en = b->lang == BRAIN_EN;
+    long days = b->absence_s / 86400, hours = b->absence_s / 3600;
+    if (days >= 2) {
+        int miss = b->intimacy >= 30;
+        if (en) snprintf(out, cap, "It's been %ld days, %s.%s", days, you, miss ? " ...I missed you a little." : "");
+        else SAY(b, out, cap, "%ld 日ぶりだね、%s。%s", "%ld 日ぶりですね、%sさん。%s", "%ld 日ぶりじゃん、%s！%s", days, you,
+                 miss ? (style(b) == 1 ? "……少し寂しかったです。" : style(b) == 2 ? "さみしかったんだからね！" : "……ちょっと寂しかった。") : "");
+        return;
+    }
+    if (hours >= 1 && brain_stage(b) >= 2) {
+        char w[WORD_MAX];
+        const char *topic = longest_run(b->utt[b->nutt - 1], w, sizeof w);
+        if (!topic) return;
+        if (en) snprintf(out, cap, "Last time we were talking about \"%s\", %s. Tell me the rest?", topic, you);
+        else SAY(b, out, cap, "この前は「%s」の話をしてたね、%s。続き、聞かせて？", "この前は「%s」のお話をしていましたね、%sさん。続きを聞かせてください。", "この前「%s」の話してたじゃん、%s。続き聞かせてよ！", topic, you);
+    }
+}
+
+/* bond.txt: key=value lines and `fact<TAB>kind<TAB>text` for the facts that
+ * came from its own questions. */
+void brain_bond_load(struct brain *b, const char *text, long now)
+{
+    long last_seen = 0;
+    int sessions = 0;
+    const char *p = text ? text : "";
+    while (*p) {
+        const char *e = strchr(p, '\n');
+        size_t n = e ? (size_t)(e - p) : strlen(p);
+        char line[256];
+        snprintf(line, sizeof line, "%.*s", (int)(n < sizeof line - 1 ? n : sizeof line - 1), p);
+        p += n + (e ? 1 : 0);
+        if (starts(line, "sessions=")) sessions = atoi(line + 9);
+        else if (starts(line, "last_seen=")) last_seen = atol(line + 10);
+        else if (starts(line, "intimacy=")) { b->intimacy = 0; add_intimacy(b, atoi(line + 9)); }
+        else if (starts(line, "mood=")) { b->mood = 0; add_mood(b, atoi(line + 5)); }
+        else if (starts(line, "asked=")) b->asked_q = (unsigned)strtoul(line + 6, NULL, 16);
+        else if (starts(line, "pending=")) { int q = atoi(line + 8); b->pending_q = q >= 0 && q < Q_COUNT ? q : -1; }
+        else if (starts(line, "idle=")) b->idle_count = atoi(line + 5);
+        else if (starts(line, "lastq=")) b->last_q = atoi(line + 6);
+        else if (starts(line, "user_name=") && !b->user_name[0]) set_name(b->user_name, line + 10);   /* names given on request are not in the log */
+        else if (starts(line, "own_name=") && !b->own_name[0]) set_name(b->own_name, line + 9);
+        else if (starts(line, "fact\t")) {
+            char *kind = line + 5, *t = strchr(kind, '\t');
+            if (!t) continue;
+            *t++ = '\0';
+            remember_kept(b, kind, t);
+        }
+    }
+    b->sessions = sessions + 1;
+    b->absence_s = last_seen > 0 && now > last_seen ? now - last_seen : 0;
+    if (b->absence_s >= 2 * 86400) add_mood(b, -10);                  /* lonely */
+}
+
+void brain_bond_save(const struct brain *b, long now, char *out, size_t cap)
+{
+    size_t o = (size_t)snprintf(out, cap, "sessions=%d\nlast_seen=%ld\nintimacy=%d\nmood=%d\nasked=%x\npending=%d\nidle=%d\nlastq=%d\nuser_name=%s\nown_name=%s\n",
+                                b->sessions, now, b->intimacy, b->mood, b->asked_q, b->pending_q, b->idle_count, b->last_q, b->user_name, b->own_name);
+    for (int i = 0; i < b->nfacts && o < cap; i++) {
+        if (!b->facts[i].kept) continue;
+        int w = snprintf(out + o, cap - o, "fact\t%s\t%s\n", b->facts[i].kind, b->facts[i].text);
         if (w < 0 || (size_t)w >= cap - o) break;
         o += (size_t)w;
     }
