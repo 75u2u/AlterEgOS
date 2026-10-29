@@ -168,7 +168,7 @@ int store_read(const char *name, char *buf, size_t cap)
     return (int)n;
 }
 
-int store_write(const char *name, const char *data)
+int store_write_bytes(const char *name, const void *data, size_t len)
 {
     if (!g_dir[0]) return -1;
     char p[320], tmp[330];
@@ -176,13 +176,46 @@ int store_write(const char *name, const char *data)
     snprintf(tmp, sizeof tmp, "%s.tmp", p);
     int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
     if (fd < 0) return -1;
-    size_t len = strlen(data);
-    ssize_t n = write(fd, data, len);
-    int ok = (n == (ssize_t)len) && fsync(fd) == 0;
+    const unsigned char *d = data;
+    size_t done = 0;
+    int ok = 1;
+    while (done < len) {
+        ssize_t n = write(fd, d + done, len - done);
+        if (n <= 0) { ok = 0; break; }
+        done += (size_t)n;
+    }
+    ok = ok && fsync(fd) == 0;
     close(fd);
     if (!ok || rename(tmp, p) < 0) { unlink(tmp); return -1; }
     sync();   /* a USB stick may be pulled right after */
     return 0;
+}
+
+int store_write(const char *name, const char *data) { return store_write_bytes(name, data, strlen(data)); }
+
+unsigned char *store_read_bytes(const char *name, size_t *len)
+{
+    *len = 0;
+    if (!g_dir[0]) return NULL;
+    char p[320];
+    snprintf(p, sizeof p, "%s/%s", g_dir, name);
+    int fd = open(p, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return NULL;
+    struct stat st;
+    if (fstat(fd, &st) < 0 || st.st_size <= 0 || st.st_size > 64 * 1024 * 1024) { close(fd); return NULL; }
+    size_t size = (size_t)st.st_size;
+    unsigned char *buf = malloc(size);
+    if (!buf) { close(fd); return NULL; }
+    size_t done = 0;
+    while (done < size) {
+        ssize_t n = read(fd, buf + done, size - done);
+        if (n <= 0) break;
+        done += (size_t)n;
+    }
+    close(fd);
+    if (done != size) { free(buf); return NULL; }
+    *len = size;
+    return buf;
 }
 
 int store_append(const char *name, const char *line)

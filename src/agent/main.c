@@ -18,6 +18,11 @@
  * silence), and at the greeting it says how long the user has been away.
  * What that needs beyond the utterance log (closeness, mood, questions
  * asked and answered, boots, when it last heard the user) is bond.txt.
+ *
+ * Its own language model (llm.c) studies the conversation in the pauses:
+ * every tick of the wait loop it trains for ALTEREGO_REVIEW_MS milliseconds
+ * (500 by default, 0 turns it off) until there is nothing new to study, and
+ * the weights are saved to model.bin now and then and at the end.
  */
 
 #define _GNU_SOURCE
@@ -42,10 +47,12 @@
 #define ACTIONS_FILE "actions.log"
 #define BOND_FILE   "bond.txt"
 #define DRAWINGS_FILE "drawings.txt"
+#define MODEL_FILE  "model.bin"
 
 #define BODY_EVERY_MS   2000    /* how often the body is felt while waiting for a line */
 #define REMARK_GAP_S    60      /* unprompted remarks about the body, at most one per */
 #define IDLE_DEFAULT_S  180     /* silence before it speaks up on its own (ALTEREGO_IDLE_S) */
+#define REVIEW_DEFAULT_MS 500   /* of every BODY_EVERY_MS tick spent studying (ALTEREGO_REVIEW_MS) */
 
 /* One line to the kernel log so a serial console, dmesg or the CI boot test
  * can see the agent came up even when its own tty is the VGA screen.
@@ -103,6 +110,27 @@ static void save_self(struct brain *b, const struct persona *p)
     store_write(BOND_FILE, bond);
 }
 
+/* The language model's weights: slow to rebuild from the log, so they are kept. */
+static void load_model(struct brain *b, const char *store)
+{
+    if (!store) return;
+    size_t len;
+    unsigned char *bytes = store_read_bytes(MODEL_FILE, &len);
+    if (bytes && brain_model_load(b, bytes, len) < 0)
+        fprintf(stderr, "alterego: %s is not a model of this shape, studying from the start\n", MODEL_FILE);
+    free(bytes);
+}
+
+static void save_model(struct brain *b, const char *store, int force)
+{
+    if (!store) return;
+    size_t len;
+    unsigned char *bytes = brain_model_save(b, &len, force);
+    if (!bytes) return;
+    store_write_bytes(MODEL_FILE, bytes, len);
+    free(bytes);
+}
+
 static void load_bond(struct brain *b, const char *store)
 {
     char *bond = store ? store_read_all(BOND_FILE) : NULL;
@@ -141,6 +169,7 @@ static void forget_everything(void)
     store_remove(ACTIONS_FILE);
     store_remove(BOND_FILE);
     store_remove(DRAWINGS_FILE);
+    store_remove(MODEL_FILE);
 }
 
 /* Wait up to `ms` for input; 1 when a line can be read, 0 on timeout */
@@ -172,12 +201,15 @@ int main(void)
         char *log = store_read_all(LOG_FILE);
         if (log) { brain_load_log(b, log); free(log); }
     }
+    load_model(b, store);
     load_bond(b, store);
     struct body body;
     body_init(&body);
     brain_set_body(b, body.level);
     time_t last_remark = 0;
     int idle_s = getenv("ALTEREGO_IDLE_S") ? atoi(getenv("ALTEREGO_IDLE_S")) : IDLE_DEFAULT_S;
+    int review_ms = getenv("ALTEREGO_REVIEW_MS") ? atoi(getenv("ALTEREGO_REVIEW_MS")) : REVIEW_DEFAULT_MS;
+    if (review_ms > BODY_EVERY_MS - 100) review_ms = BODY_EVERY_MS - 100;
     time_t quiet_since = time(NULL);
     int idle_said = 0;
 
@@ -193,8 +225,17 @@ int main(void)
     for (;;) {
         printf("%s> ", brain_user_name(b, &p));
         fflush(stdout);
-        /* Feel the body while waiting; speak up when it gets tired or recovers. */
-        while (!wait_line(BODY_EVERY_MS)) {
+        /* Feel the body while waiting; speak up when it gets tired or recovers.
+         * Study the conversation (the language model) for part of each tick
+         * while there is something new to study. */
+        for (;;) {
+            if (wait_line(0)) break;                  /* a line is already there: answer first */
+            int wait_ms = BODY_EVERY_MS;
+            if (review_ms > 0 && brain_wants_review(b) && brain_review(b, review_ms) > 0) {
+                wait_ms -= review_ms;
+                save_model(b, store, 0);
+            }
+            if (wait_line(wait_ms)) break;
             enum body_level before = body.level;
             body_sample(&body);
             brain_set_body(b, body.level);
@@ -265,6 +306,7 @@ int main(void)
     }
     free(line);
     if (store) save_self(b, &p);                      /* when it last heard the user */
+    save_model(b, store, 1);
 
     if (brain_turns(b) > 0) {
         brain_status(b, &p, reply, sizeof reply);

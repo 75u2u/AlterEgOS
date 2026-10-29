@@ -16,6 +16,8 @@
 const char *store_open(void);                        /* dir path or NULL */
 int store_read(const char *name, char *buf, size_t cap);   /* bytes or -1 */
 int store_write(const char *name, const char *data);       /* 0 or -1 */
+int store_write_bytes(const char *name, const void *data, size_t len);   /* 0 or -1 */
+unsigned char *store_read_bytes(const char *name, size_t *len);         /* malloc'd or NULL */
 int store_append(const char *name, const char *line);      /* line + \n; 0 or -1 */
 char *store_read_all(const char *name);                    /* malloc'd or NULL */
 int store_remove(const char *name);                        /* 0 (also when absent) or -1 */
