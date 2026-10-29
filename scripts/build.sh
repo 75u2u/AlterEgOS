@@ -48,6 +48,11 @@ if [ -z "$cmake_ok" ]; then
     echo "   Recommended: sudo apt install cmake  (then rm -rf $OUT/build/host-cmake-*)" >&2
 fi
 
+# CMake 4 drops support for cmake_minimum_required < 3.5, which old packages
+# (mbedtls 2.28) still declare; this makes CMake 4 configure them anyway
+# (ignored by CMake 3).
+export CMAKE_POLICY_VERSION_MINIMUM=3.5
+
 mkdir -p "$OUT"
 if [ ! -f "$OUT/.config" ]; then
     echo "== configuring alteregos_${ARCH}_defconfig"
