@@ -262,7 +262,7 @@ jobs:
       - name: Screen smoke test (headless desktop, typed kana and converted kanji reach the agent)
         run: |
           state=$(mktemp -d)
-          # "kanji \n": Space converts かんじ to 漢字, Enter commits and sends; "watashiha \n" converts the prefix 私 and leaves は
+          # "kanji \n": Space converts かんじ to 漢字, Enter commits and sends; "watashihakanji \n" converts both 文節 at once (私は|漢字)
           ALTEREGO_HEADLESS=1024x768 ALTEREGO_SNAPSHOT="$state/shot.ppm" \
           ALTEREGO_SCRIPT=$'konnnichiha\nkyouhatsukaretanaa\nkannji \n\nwatashihakanji \n\nsute-tasu\n' ALTEREGO_SCRIPT_KANA=1 \
           ALTEREGO_FONT=src/screen/font.hex ALTEREGO_DICT=src/screen/dict.txt \
@@ -270,10 +270,11 @@ jobs:
           ALTEREGO_STATE="$state" ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml \
           timeout 60 ./src/screen/alterego-screen
           cat "$state/utterances.txt"
-          test "$(wc -l < "$state/utterances.txt")" = 4        # こんにちは, きょうはつかれたなあ, 漢字, 私はかんじ (すてーたす is a query)
+          test "$(wc -l < "$state/utterances.txt")" = 4        # こんにちは, きょうはつかれたなあ, 漢字, 私は漢字 (すてーたす is a query)
           grep -q '^こんにちは$' "$state/utterances.txt"
           grep -q '^漢字$' "$state/utterances.txt"
-          grep -q '^私はかんじ$' "$state/utterances.txt"
+          grep -q '^私は漢字$' "$state/utterances.txt"
+          grep -q '^かんじ	漢字' "$state/ime.txt"                  # what was converted is learned
           grep -q '4 回話した' "$state/personality.txt"
           python3 scripts/ppm2png.py "$state/shot.ppm" screenshot.png
       - name: Screen smoke test (the browser window shows a page, follows a link by number, colors reach the terminal)

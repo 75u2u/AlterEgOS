@@ -82,7 +82,7 @@ char dict_okuri_letter(uint32_t cp)
 {
     /* U+3041 ぁ .. U+3096 ゖ, one letter per code point */
     static const char letters[] =
-        "aaaaaaaaaa"            /* ぁあぃいぅうぇえぉお */
+        "aaiiuueeoo"            /* ぁあぃいぅうぇえぉお */
         "kgkgkgkgkg"            /* かがきぎくぐけげこご */
         "szszszszsz"            /* さざしじすずせぜそぞ */
         "tdtdttdtdtd"           /* ただちぢっつづてでとど */

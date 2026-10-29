@@ -180,41 +180,119 @@ static void test_dict(const char *path)
     ime_init(&m, &d);
     type_keys(&m, "kannji", out, sizeof out);
     CHECK(out[0] == '\0' && ime_active(&m), "preedit holds かんじ, nothing sent");
-    char shown[256]; size_t conv;
-    ime_shown(&m, shown, sizeof shown, &conv);
-    CHECK(strcmp(shown, "かんじ") == 0 && conv == 0, "shown %s", shown);
+    char shown[512]; size_t so, sl;
+    ime_shown(&m, shown, sizeof shown, &so, &sl);
+    CHECK(strcmp(shown, "かんじ") == 0 && sl == 0, "shown %s", shown);
     type_keys(&m, " ", out, sizeof out);
-    ime_shown(&m, shown, sizeof shown, &conv);
-    CHECK(m.converting && strcmp(shown, "漢字") == 0 && conv == 6, "after Space: %s", shown);
+    ime_shown(&m, shown, sizeof shown, &so, &sl);
+    CHECK(m.converting && strcmp(shown, "漢字") == 0 && so == 0 && sl == 6, "after Space: %s", shown);
     type_keys(&m, " ", out, sizeof out);
-    ime_shown(&m, shown, sizeof shown, &conv);
+    ime_shown(&m, shown, sizeof shown, &so, &sl);
     CHECK(strcmp(shown, "幹事") == 0, "second candidate: %s", shown);
     type_keys(&m, "\n", out, sizeof out);
     CHECK(strcmp(out, "幹事") == 0 && !ime_active(&m), "Enter commits %s", out);
     type_keys(&m, "\n", out, sizeof out);
     CHECK(strcmp(out, "\r") == 0, "Enter alone sends Enter");
-    /* a phrase: 漢字 + 、, converted in two steps; a digit picks; Backspace cancels */
+    /* a phrase is cut into 文節 and converted at once; punctuation is a segment of its own */
+    ime_init(&m, &d);                                              /* (forget the 幹事 it just learned) */
     type_keys(&m, "kannji, ", out, sizeof out);
-    ime_shown(&m, shown, sizeof shown, &conv);
-    CHECK(strcmp(shown, "漢字、") == 0 && conv == 6, "漢字 + 、 shown: %s", shown);
+    ime_shown(&m, shown, sizeof shown, &so, &sl);
+    CHECK(strcmp(shown, "漢字、") == 0 && so == 0 && sl == 6 && m.nsegs == 2, "漢字 + 、 shown: %s (%d segments)", shown, m.nsegs);
     type_keys(&m, "\n", out, sizeof out);
-    CHECK(strcmp(out, "漢字") == 0 && strcmp(m.pre, "、") == 0, "commit 漢字, 、 stays (%s / %s)", out, m.pre);
-    type_keys(&m, "\n", out, sizeof out);
-    CHECK(strcmp(out, "、\r") == 0 && !ime_active(&m), "Enter commits the rest and sends: %s", out);
+    CHECK(strcmp(out, "漢字、") == 0 && !ime_active(&m), "Enter commits both: %s", out);
     type_keys(&m, "gakusei 2", out, sizeof out);
-    CHECK(strlen(out) > 0 && !m.converting, "digit picks candidate 2: %s", out);
+    CHECK(strlen(out) > 0 && !m.converting, "digit picks candidate 2 and commits the last segment: %s", out);
     type_keys(&m, "\n", out, sizeof out);
     type_keys(&m, "nani \x7f", out, sizeof out);
-    ime_shown(&m, shown, sizeof shown, &conv);
+    ime_shown(&m, shown, sizeof shown, &so, &sl);
     CHECK(!m.converting && strcmp(shown, "なに") == 0, "Backspace cancels conversion: %s", shown);
     type_keys(&m, "\x1b", out, sizeof out);
     CHECK(!ime_active(&m), "Escape clears");
     type_keys(&m, "desu.\n", out, sizeof out);
     CHECK(strcmp(out, "です。\r") == 0, "punctuation stays in the preedit, Enter sends: %s", out);
+
+    /* 文節: a sentence converts as a whole; ←/→ move, Space changes one segment */
+    ime_init(&m, &d);
+    char cut[512];
+    ime_convert_text(&m, "きょうはいいてんきですね", cut, sizeof cut);
+    CHECK(strcmp(cut, "今日は|いい|天気ですね") == 0, "きょうはいいてんきですね -> %s", cut);
+    ime_convert_text(&m, "わたしはがくせいです", cut, sizeof cut);
+    CHECK(strcmp(cut, "私は|学生です") == 0, "わたしはがくせいです -> %s", cut);
+    ime_convert_text(&m, "ほんをよむ", cut, sizeof cut);
+    CHECK(strcmp(cut, "本を|読む") == 0, "ほんをよむ -> %s", cut);
+    ime_convert_text(&m, "きのうはともだちとえいがをみにいきました", cut, sizeof cut);
+    CHECK(strcmp(cut, "昨日は|友達と|映画を|見に行きました") == 0, "a long sentence -> %s", cut);
+    ime_convert_text(&m, "はなした", cut, sizeof cut);
+    CHECK(strcmp(cut, "話した") == 0, "okurigana: はなした -> %s", cut);
+    ime_convert_text(&m, "たべました", cut, sizeof cut);
+    CHECK(strcmp(cut, "食べました") == 0, "たべました -> %s", cut);
+    ime_convert_text(&m, "ぺいんとをひらいて", cut, sizeof cut);
+    CHECK(strcmp(cut, "ペイントを|開いて") == 0, "a loanword and a verb: %s", cut);
+    ime_convert_text(&m, "こーひーがすき", cut, sizeof cut);
+    CHECK(strcmp(cut, "コーヒーが|好き") == 0, "ー makes katakana: %s", cut);
+    ime_convert_text(&m, "ありがとう", cut, sizeof cut);
+    CHECK(strcmp(cut, "ありがとう") == 0, "a hiragana word stays: %s", cut);
+    type_keys(&m, "honnwoyomu ", out, sizeof out);
+    ime_shown(&m, shown, sizeof shown, &so, &sl);
+    CHECK(strcmp(shown, "本を読む") == 0 && so == 0 && sl == 6, "shown %s, first segment selected", shown);
+    ime_key(&m, "\x1b[C", out, sizeof out);                        /* → : the second segment */
+    ime_shown(&m, shown, sizeof shown, &so, &sl);
+    CHECK(so == 6 && sl == 6 && m.seg == 1, "→ selects 読む (off %zu len %zu)", so, sl);
+    type_keys(&m, " ", out, sizeof out);
+    ime_shown(&m, shown, sizeof shown, &so, &sl);
+    CHECK(strncmp(shown, "本を", 6) == 0 && strcmp(shown + 6, "読む") != 0, "Space changes only that segment: %s", shown);
+    ime_key(&m, "\x1b[D", out, sizeof out);                        /* ← back */
+    CHECK(m.seg == 0, "← goes back");
+    type_keys(&m, "\x7f", out, sizeof out);
+    ime_shown(&m, shown, sizeof shown, &so, &sl);
+    CHECK(!m.converting && strcmp(shown, "ほんをよむ") == 0, "Backspace: the kana again: %s", shown);
+    type_keys(&m, "\x1b", out, sizeof out);
+    /* Shift+←/→ change where a segment ends; the rest is cut again */
+    type_keys(&m, "kyouhaii ", out, sizeof out);
+    ime_cut(&m, cut, sizeof cut);
+    CHECK(strcmp(cut, "今日は|いい") == 0, "cut: %s", cut);
+    ime_key(&m, "\x1b[1;2D", out, sizeof out);                     /* Shift+←: 今日は -> 今日 */
+    ime_cut(&m, cut, sizeof cut);
+    CHECK(strncmp(cut, "今日|", 7) == 0 && m.nsegs >= 2, "Shift+← shrinks the segment: %s", cut);
+    ime_key(&m, "\x1b[1;2C", out, sizeof out);                     /* Shift+→: back */
+    ime_cut(&m, cut, sizeof cut);
+    CHECK(strcmp(cut, "今日は|いい") == 0, "Shift+→ stretches it again: %s", cut);
+    type_keys(&m, "\x1b\x1b", out, sizeof out);                     /* leave the conversion, then drop the kana */
+    CHECK(!ime_active(&m), "nothing left");
+
+    /* learning: a choice comes first next time, and survives in the file */
+    char dir[] = "/tmp/alterego-ime-XXXXXX";
+    CHECK(mkdtemp(dir) != NULL, "temp dir");
+    char learn[300];
+    snprintf(learn, sizeof learn, "%s/ime.txt", dir);
+    ime_set_learning(&m, learn);
+    ime_convert_text(&m, "えをみて", cut, sizeof cut);
+    CHECK(strcmp(cut, "絵を|見て") == 0, "えをみて -> %s", cut);
+    type_keys(&m, "kannji \n", out, sizeof out);                   /* 漢字: the first candidate, learned anyway */
+    type_keys(&m, "kannji  \n", out, sizeof out);                  /* 幹事: chosen */
+    CHECK(strcmp(out, "幹事") == 0, "chose 幹事: %s", out);
+    type_keys(&m, "kannji ", out, sizeof out);
+    ime_shown(&m, shown, sizeof shown, &so, &sl);
+    CHECK(strcmp(shown, "幹事") == 0, "the choice comes first now: %s", shown);
+    type_keys(&m, "\x1b\x1b", out, sizeof out);
+    type_keys(&m, "kannjiwoyomu \n", out, sizeof out);
+    CHECK(strcmp(out, "幹事を読む") == 0, "the learned word with a particle: %s", out);
+    struct ime m2;
+    ime_init(&m2, &d);
+    ime_set_learning(&m2, learn);
+    CHECK(m2.nlearned >= 2, "learned entries loaded: %d", m2.nlearned);
+    type_keys(&m2, "kannji ", out, sizeof out);
+    ime_shown(&m2, shown, sizeof shown, &so, &sl);
+    CHECK(strcmp(shown, "幹事") == 0, "and still first after a restart: %s", shown);
+    ime_free(&m2);
+    ime_free(&m);
+    unlink(learn);
+    rmdir(dir);
+
     /* no dictionary: Space offers hiragana / katakana */
     ime_init(&m, NULL);
     type_keys(&m, "tesuto ", out, sizeof out);
-    ime_shown(&m, shown, sizeof shown, &conv);
+    ime_shown(&m, shown, sizeof shown, &so, &sl);
     CHECK(strcmp(shown, "てすと") == 0, "no dict, first: %s", shown);
     type_keys(&m, " \n", out, sizeof out);
     CHECK(strcmp(out, "テスト") == 0, "no dict, katakana: %s", out);
