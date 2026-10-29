@@ -164,7 +164,7 @@ jobs:
           grep -q '^second page back\[1\]' "$state/windows.txt"           # link [1] of index.html is sub/page.html
           grep -q 'サブページ - file:.*/sub/page.html' "$state/windows.txt"
           python3 scripts/ppm2png.py "$state/shot.ppm" screenshot-browser.png
-      - name: Screen smoke test (the アプリ menu and the paint window)
+      - name: Screen smoke test (the メニュー and the paint window)
         run: |
           state=$(mktemp -d)
           ALTEREGO_HEADLESS=1024x768 ALTEREGO_SNAPSHOT="$state/shot.ppm" ALTEREGO_DUMP="$state/windows.txt" \

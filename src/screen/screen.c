@@ -6,7 +6,7 @@
  * on its own pty (AlterEgo the agent, a busybox shell, the browser
  * alterego-web) or something the desktop draws itself (paint). Windows are
  * raised, focused, moved and closed with the mouse; the bar at the top has
- * the アプリ menu that opens or raises any app, a button to switch the
+ * the メニュー button that opens or raises any app, a button to switch the
  * Japanese input (romaji to kana, Space for kanji) on and off, and to
  * reboot or power off (PID 1 does the actual work when signalled).
  *
@@ -85,7 +85,7 @@ struct app {
     int visible_at_start;
 };
 static const struct app g_apps[WIN_MAX] = {
-    [W_CHAT]  = { "AlterEgo (チャット)", "AlterEgo", WK_TERM, "/usr/bin/alterego", "ALTEREGO_AGENT", 1 },
+    [W_CHAT]  = { "AlterEgo", "AlterEgo", WK_TERM, "/usr/bin/alterego", "ALTEREGO_AGENT", 1 },
     [W_SHELL] = { "シェル", "シェル (busybox sh)", WK_TERM, "/bin/sh", "ALTEREGO_SHELL", 1 },
     [W_WEB]   = { "ブラウザ", "ブラウザ (alterego-web)", WK_TERM, "/usr/bin/alterego-web", "ALTEREGO_WEB", 0 },
     [W_PAINT] = { "ペイント", "ペイント", WK_PAINT, NULL, NULL, 0 },
@@ -267,11 +267,10 @@ static void draw_bar(void)
     x = font_text(&g_font, &g_cv, x, 4, "AlterEgOS " ALTEREGOS_VERSION, C_BARTEXT, C_BAR) + 16;
     g_menu_x = x;
     g_menu_y = BAR_H;
-    button(x, 3, "アプリ", g_menu_open, A_MENU);
-    x += font_text_width(&g_font, "アプリ") + 12 + 6;
+    button(x, 3, "メニュー", g_menu_open, A_MENU);
+    x += font_text_width(&g_font, "メニュー") + 12 + 6;
     const struct win *fw = &g_win[g_focus];
-    if (fw->visible) x = font_text(&g_font, &g_cv, x + 4, 4, fw->title, C_BARTEXT, C_BAR) + 16;   /* what has the keyboard */
-    button(x, 3, g_kana_mode ? "あ かな入力" : "A 英数入力", g_kana_mode, A_KANA);
+    if (fw->visible) font_text(&g_font, &g_cv, x + 4, 4, fw->title, C_BARTEXT, C_BAR);   /* what has the keyboard */
 
     char clock[16];
     time_t now = time(NULL);
@@ -285,10 +284,14 @@ static void draw_bar(void)
     w = font_text_width(&g_font, "再起動") + 12;
     button(right - w, 3, "再起動", 0, A_REBOOT);
     right -= w + 16;
+    const char *kana = g_kana_mode ? "あ かな入力" : "A 英数入力";
+    w = font_text_width(&g_font, kana) + 12;
+    button(right - w, 3, kana, g_kana_mode, A_KANA);
+    right -= w + 16;
     font_text(&g_font, &g_cv, right - font_text_width(&g_font, clock), 4, clock, C_BARTEXT, C_BAR);
 }
 
-/* The アプリ menu: one row per app, a mark on the ones that are open. */
+/* The メニュー: one row per app, a mark on the ones that are open. */
 static void draw_menu(void)
 {
     if (!g_menu_open) return;
