@@ -7,7 +7,10 @@
 #
 # Buildroot is downloaded once into build/buildroot/. The first build takes
 # 30–60 minutes (it compiles the toolchain and the kernel); later builds of
-# src/ alone take seconds: `scripts/build.sh x86_64 alteregos-rebuild`.
+# src/ alone take seconds. Buildroot does not notice when a "local" package's
+# sources change, so this script rebuilds the alteregos package itself
+# whenever something under src/ is newer than its last build (the same as
+# `scripts/build.sh x86_64 alteregos-rebuild` by hand).
 set -euo pipefail
 
 ARCH="${1:-x86_64}"
@@ -65,6 +68,15 @@ fi
 MAKE_ARGS=()
 [ -n "${HOSTCC:-}" ] && MAKE_ARGS+=("HOSTCC=$HOSTCC")
 [ -n "${HOSTCXX:-}" ] && MAKE_ARGS+=("HOSTCXX=$HOSTCXX")
+
+# The OS itself is a Buildroot "local" package: once built, a plain `make`
+# keeps the old binaries even after src/ changed (after a git pull, say).
+# Rebuild it when anything in src/ is newer than its build stamp.
+STAMP="$OUT/build/alteregos-local/.stamp_built"
+if [ "$TARGET" = "all" ] && [ -f "$STAMP" ] && [ -n "$(find "$REPO/src" -newer "$STAMP" -type f -print -quit)" ]; then
+    echo "== src/ changed since the last build: make alteregos-rebuild ($ARCH)"
+    make -C "$BR_DIR" O="$OUT" BR2_EXTERNAL="$REPO/buildroot" ${MAKE_ARGS[@]+"${MAKE_ARGS[@]}"} alteregos-rebuild
+fi
 
 echo "== make $TARGET ($ARCH)"
 make -C "$BR_DIR" O="$OUT" BR2_EXTERNAL="$REPO/buildroot" ${MAKE_ARGS[@]+"${MAKE_ARGS[@]}"} "$TARGET"
