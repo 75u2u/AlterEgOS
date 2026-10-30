@@ -5,8 +5,8 @@ CFLAGS  ?= -O2
 CFLAGS  += -std=c17 -Wall -Wextra -Werror -Wpedantic
 LDFLAGS += -static -lm
 
-SRC = main.c persona.c brain.c utf8.c store.c skills.c apps.c drawings.c shapes.c body.c llm.c
-HDR = persona.h brain.h utf8.h store.h skills.h apps.h drawings.h shapes.h body.h llm.h
+SRC = main.c persona.c brain.c utf8.c store.c skills.c apps.c drawings.c shapes.c body.c llm.c play.c
+HDR = persona.h brain.h utf8.h store.h skills.h apps.h drawings.h shapes.h body.h llm.h play.h
 
 all: alterego
 

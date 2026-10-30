@@ -58,6 +58,9 @@ void brain_set_body(struct brain *b, int level);
 /* True for lines that ask about the mind itself (status, memories): they
  * are answered but not learned as utterances. */
 int brain_is_query(const char *line);
+/* True for lines that belong to a game (play.c): a hand for じゃんけん, a
+ * word for しりとり, 「サイコロ振って」... They are played, not learned. */
+int brain_is_play(const struct brain *b, const char *line);
 
 /* Compose the reply to `input` (learn it first). */
 void brain_reply(struct brain *b, const struct persona *p, const char *input, char *out, size_t cap);

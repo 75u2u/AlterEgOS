@@ -10,6 +10,7 @@
 #include "brain.h"
 #include "llm.h"
 #include "persona.h"
+#include "play.h"
 #include "utf8.h"
 
 #define ORDER      3            /* longest context, in code points */
@@ -93,6 +94,7 @@ struct brain {
     char answer[96];
     char adopted[96];               /* a like of the user it just made its own */
     int sessions;                   /* boots with this memory, this one included */
+    struct play play;               /* the games (play.c): one may be waiting for the next line */
     long absence_s;                 /* seconds since it was last talked to, at this boot */
     int idle_count;                 /* times it spoke up into silence */
     int last_q;                     /* nutt when it last asked something */
@@ -757,6 +759,14 @@ static int query_kind(const char *line)
 }
 
 int brain_is_query(const char *line) { return query_kind(line) != 0; }
+
+int brain_is_play(const struct brain *b, const char *line)
+{
+    char lo[512];
+    snprintf(lo, sizeof lo, "%s", line);
+    lower_ascii(lo);
+    return play_wants(&b->play, line, lo);
+}
 
 
 /* ---- personality and memories: what one utterance teaches */
@@ -1515,9 +1525,24 @@ static void reply_core(struct brain *b, const struct persona *p, const char *inp
     }
 }
 
+static void add_intimacy(struct brain *b, int d);
+static void add_mood(struct brain *b, int d);
+
 void brain_reply(struct brain *b, const struct persona *p, const char *input, char *out, size_t cap)
 {
     b->lang = brain_detect_lang(input, b->lang);     /* answer in the language spoken to */
+    if (brain_is_play(b, input)) {                   /* a game: played, with feeling */
+        char lo[512], expr[16];
+        int mood = 0;
+        snprintf(lo, sizeof lo, "%s", input);
+        lower_ascii(lo);
+        if (play_reply(&b->play, b->lang, brain_stage(b), style(b), brain_user_name(b, p), input, lo, &b->rng, out, cap, expr, sizeof expr, &mood)) {
+            (void)expr;                              /* for its face, once it has one */
+            add_mood(b, mood);
+            if (b->play.mode == PLAY_NONE) add_intimacy(b, 1);   /* a game played together */
+            return;
+        }
+    }
     int q = query_kind(input);
     if (q == 1) { brain_status(b, p, out, cap); return; }
     if (q == 2) { brain_memories(b, p, out, cap); return; }
@@ -1975,6 +2000,7 @@ void brain_bond_load(struct brain *b, const char *text, long now)
         else if (starts(line, "pending=")) { int q = atoi(line + 8); b->pending_q = q >= 0 && q < Q_COUNT ? q : -1; }
         else if (starts(line, "idle=")) b->idle_count = atoi(line + 5);
         else if (starts(line, "lastq=")) b->last_q = atoi(line + 6);
+        else if (starts(line, "janken=")) sscanf(line + 7, "%d,%d,%d", &b->play.wins, &b->play.losses, &b->play.draws);
         else if (starts(line, "user_name=") && !b->user_name[0]) set_name(b->user_name, line + 10);   /* names given on request are not in the log */
         else if (starts(line, "own_name=") && !b->own_name[0]) set_name(b->own_name, line + 9);
         else if (starts(line, "fact\t")) {
@@ -1991,8 +2017,8 @@ void brain_bond_load(struct brain *b, const char *text, long now)
 
 void brain_bond_save(const struct brain *b, long now, char *out, size_t cap)
 {
-    size_t o = (size_t)snprintf(out, cap, "sessions=%d\nlast_seen=%ld\nintimacy=%d\nmood=%d\nasked=%x\npending=%d\nidle=%d\nlastq=%d\nuser_name=%s\nown_name=%s\n",
-                                b->sessions, now, b->intimacy, b->mood, b->asked_q, b->pending_q, b->idle_count, b->last_q, b->user_name, b->own_name);
+    size_t o = (size_t)snprintf(out, cap, "sessions=%d\nlast_seen=%ld\nintimacy=%d\nmood=%d\nasked=%x\npending=%d\nidle=%d\nlastq=%d\njanken=%d,%d,%d\nuser_name=%s\nown_name=%s\n",
+                                b->sessions, now, b->intimacy, b->mood, b->asked_q, b->pending_q, b->idle_count, b->last_q, b->play.wins, b->play.losses, b->play.draws, b->user_name, b->own_name);
     for (int i = 0; i < b->nfacts && o < cap; i++) {
         if (!b->facts[i].kept) continue;
         int w = snprintf(out + o, cap - o, "fact\t%s\t%s\n", b->facts[i].kind, b->facts[i].text);
