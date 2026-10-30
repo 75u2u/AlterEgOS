@@ -32,6 +32,7 @@
 
 #include "canvas.h"
 #include "dict.h"
+#include "face.h"
 #include "fb.h"
 #include "font.h"
 #include "ime.h"
@@ -47,7 +48,7 @@
 #define BAR_H     24
 #define TITLE_H   20
 #define PAD       4
-#define WIN_MAX   4
+#define WIN_MAX   5
 
 #define C_DESK    0x1E2430
 #define C_BAR     0x2B3340
@@ -64,17 +65,19 @@
 #define C_POPUP   0x2B3340
 #define C_CURSOR  0xE6E6E6
 #define C_BOLD    0xFFFFFF
+#define C_FACEBG  0x1A2230
+#define FACE_FPS_MS 80          /* the character is looked at this often while it is on screen; drawn only when it moved */
 
 /* The 16 ANSI colors, as cell.fg 1..16. */
 static const uint32_t g_ansi[16] = {
     0x3A4250, 0xE06C75, 0x98C379, 0xE5C07B, 0x61AFEF, 0xC678DD, 0x56B6C2, 0xD0D0D0,
     0x7F8894, 0xFF8A94, 0xB5E890, 0xFFD866, 0x7FC8FF, 0xE0A0FF, 0x7FE0E8, 0xFFFFFF };
 
-enum { W_CHAT = 0, W_SHELL = 1, W_WEB = 2, W_PAINT = 3 };
-enum { WK_TERM = 0, WK_PAINT = 1 };
+enum { W_CHAT = 0, W_SHELL = 1, W_WEB = 2, W_PAINT = 3, W_FACE = 4 };
+enum { WK_TERM = 0, WK_PAINT = 1, WK_FACE = 2 };
 
 /* An app is a window: a program on a pty, or something drawn by the
- * desktop itself (paint). The アプリ menu lists this table; adding an
+ * desktop itself (paint, AlterEgo's face). The アプリ menu lists this table; adding an
  * app is adding a row (and a W_ index above). */
 struct app {
     const char *name;           /* in the menu */
@@ -89,6 +92,7 @@ static const struct app g_apps[WIN_MAX] = {
     [W_SHELL] = { "シェル", "シェル (busybox sh)", WK_TERM, "/bin/sh", "ALTEREGO_SHELL", 1 },
     [W_WEB]   = { "ブラウザ", "ブラウザ (alterego-web)", WK_TERM, "/usr/bin/alterego-web", "ALTEREGO_WEB", 0 },
     [W_PAINT] = { "ペイント", "ペイント", WK_PAINT, NULL, NULL, 0 },
+    [W_FACE]  = { "キャラクター", "AlterEgo の顔", WK_FACE, NULL, NULL, 1 },
 };
 
 struct win {
@@ -114,7 +118,9 @@ static struct input g_in;
 static struct dict g_dict;
 static struct ime g_ime;
 static struct win g_win[WIN_MAX];
-static int g_order[WIN_MAX] = { W_SHELL, W_PAINT, W_WEB, W_CHAT };     /* bottom to top */
+static int g_order[WIN_MAX] = { W_SHELL, W_PAINT, W_WEB, W_CHAT, W_FACE };     /* bottom to top */
+static struct face g_face;                              /* AlterEgo's character (face.c) */
+static long g_face_drawn;                               /* ms: when the face was last drawn */
 static int g_focus = W_CHAT;
 static int g_kana_mode = 0;
 static int g_mx, g_my;                                  /* mouse pointer */
@@ -168,8 +174,8 @@ static void kmsg(const char *fmt, ...)
 
 /* ---- windows */
 
-static int win_w(const struct win *w) { return (w->kind == WK_PAINT ? paint_width(&w->paint) : w->cols * FONT_W) + 2 * PAD + 2; }
-static int win_h(const struct win *w) { return TITLE_H + (w->kind == WK_PAINT ? paint_height(&w->paint) : w->rows * FONT_H) + 2 * PAD + 2; }
+static int win_w(const struct win *w) { return (w->kind == WK_PAINT ? paint_width(&w->paint) : w->kind == WK_FACE ? FACE_W : w->cols * FONT_W) + 2 * PAD + 2; }
+static int win_h(const struct win *w) { return TITLE_H + (w->kind == WK_PAINT ? paint_height(&w->paint) : w->kind == WK_FACE ? FACE_H : w->rows * FONT_H) + 2 * PAD + 2; }
 
 static char **child_env(void)
 {
@@ -202,6 +208,9 @@ static void win_spawn(struct win *w)
     g_dirty = 1;
 }
 
+static void handle_osc(const char *osc);
+static void on_term_osc(struct term *t, const char *osc, void *arg) { (void)t; (void)arg; handle_osc(osc); }
+
 static void win_init(struct win *w, const char *title, char *const argv[], int cols, int rows, int x, int y)
 {
     memset(w, 0, sizeof *w);
@@ -215,6 +224,7 @@ static void win_init(struct win *w, const char *title, char *const argv[], int c
     w->visible = 1;
     w->kind = WK_TERM;
     term_init(&w->term, cols, rows);
+    w->term.on_osc = on_term_osc;
 }
 
 static void win_init_paint(struct win *w, const char *title, int pw, int ph, int x, int y)
@@ -227,6 +237,17 @@ static void win_init_paint(struct win *w, const char *title, int pw, int ph, int
     w->fd = -1;
     w->visible = 1;
     paint_init(&w->paint, pw, ph);
+}
+
+static void win_init_face(struct win *w, const char *title, int x, int y)
+{
+    memset(w, 0, sizeof *w);
+    w->title = title;
+    w->kind = WK_FACE;
+    w->x = x;
+    w->y = y;
+    w->fd = -1;
+    w->visible = 1;
 }
 
 /* Bring window i to the front; the keyboard follows unless `keep_focus`
@@ -265,16 +286,17 @@ static void hide_win(int i)
 
 static int app_named(const char *name)
 {
-    static const char *const names[WIN_MAX] = { [W_CHAT] = "chat", [W_SHELL] = "shell", [W_WEB] = "web", [W_PAINT] = "paint" };
+    static const char *const names[WIN_MAX] = { [W_CHAT] = "chat", [W_SHELL] = "shell", [W_WEB] = "web", [W_PAINT] = "paint", [W_FACE] = "face" };
     for (int i = 0; i < WIN_MAX; i++) if (strcmp(name, names[i]) == 0) return i;
     return -1;
 }
 
 /* A request from a program in a window, sent as an OSC string
- * "7700;open;<app>[;url]", "7700;close;<app>" or "7700;draw;paint;<spec>"
- * (the agent does this for 「ペイントを開いて」 and 「顔を描いて」). Opening
- * the browser on a URL restarts it there; a drawing is saved at once so
- * that 「絵を見て」 finds it. */
+ * "7700;open;<app>[;url]", "7700;close;<app>", "7700;draw;paint;<spec>"
+ * (the agent does this for 「ペイントを開いて」 and 「顔を描いて」) or
+ * "7700;face;<state>" (the agent's feelings after every line it says, for
+ * its face). Opening the browser on a URL restarts it there; a drawing is
+ * saved at once so that 「絵を見て」 finds it. */
 static void handle_osc(const char *osc)
 {
     if (strncmp(osc, "7700;", 5) != 0) return;
@@ -283,6 +305,7 @@ static void handle_osc(const char *osc)
     size_t n = strcspn(p, ";");
     snprintf(cmd, sizeof cmd, "%.*s", (int)n, p);
     p += n + (p[n] == ';');
+    if (strcmp(cmd, "face") == 0) { face_set(&g_face, p, now_ms()); g_dirty = 1; return; }
     n = strcspn(p, ";");
     snprintf(app, sizeof app, "%.*s", (int)n, p);
     p += n + (p[n] == ';');
@@ -406,6 +429,12 @@ static void draw_win(int i)
     }
     int ox = w->x + 1 + PAD, oy = w->y + TITLE_H + PAD;
     if (w->kind == WK_PAINT) { paint_draw(&w->paint, &g_cv, &g_font, ox, oy); return; }
+    if (w->kind == WK_FACE) {
+        canvas_fill(&g_cv, ox, oy, FACE_W, FACE_H, C_FACEBG);
+        g_face_drawn = now_ms();
+        face_draw(&g_face, &g_cv, &g_font, ox, oy, g_face_drawn);
+        return;
+    }
     for (int y = 0; y < w->rows; y++) {
         for (int x = 0; x < w->cols; x++) {
             const struct cell *c = w->term.cells + (size_t)y * w->cols + x;
@@ -467,6 +496,34 @@ static void draw_pointer(void)
             if (px < 0 || py < 0 || px >= g_cv.w || py >= g_cv.h) continue;
             g_cv.px[(size_t)py * g_cv.w + px] = ch == 'X' ? 0x000000 : 0xFFFFFF;
         }
+}
+
+static void render(void);
+
+/* Is anything drawn over the face window: a window above it in the order, or the menu? */
+static int face_covered(void)
+{
+    const struct win *fw = &g_win[W_FACE];
+    int fx1 = fw->x + win_w(fw), fy1 = fw->y + win_h(fw), above = 0;
+    for (int k = 0; k < WIN_MAX; k++) {
+        const struct win *w = &g_win[g_order[k]];
+        if (w == fw) { above = 1; continue; }
+        if (!above || !w->visible) continue;
+        if (w->x < fx1 && w->x + win_w(w) > fw->x && w->y < fy1 && w->y + win_h(w) > fw->y) return 1;
+    }
+    return g_menu_open;
+}
+
+/* The face moved and nothing else did: redraw its window alone and put only
+ * that part on the screen, so that an animated character costs little. */
+static void render_face(void)
+{
+    const struct win *fw = &g_win[W_FACE];
+    if (face_covered()) { render(); return; }
+    draw_win(W_FACE);
+    draw_pointer();
+    if (g_fb.mem) fb_blit_rect(&g_fb, &g_cv, fw->x, fw->y, win_w(fw), win_h(fw));
+    else if (g_snapshot) write_ppm(g_snapshot);
 }
 
 static void render(void)
@@ -563,7 +620,8 @@ static void on_key(const struct input_ev *e)
         return;
     }
     if (!w->visible) { w->visible = 1; g_dirty = 1; }
-    if (w->kind != WK_TERM) return;                       /* paint has no keys */
+    if (w->kind != WK_TERM) return;                       /* paint and the face have no keys */
+    if (g_focus == W_CHAT) face_typing(&g_face, now_ms());  /* it looks up and listens */
     const char *t = e->text;
     if (g_kana_mode && !e->ctrl) {
         char out[IME_PRE + DICT_CAND + 16];
@@ -593,6 +651,10 @@ static void on_input(const struct input_ev *e)
         if (g_paint_win >= 0) {
             struct win *w = &g_win[g_paint_win];
             paint_move(&w->paint, g_mx - (w->x + 1 + PAD), g_my - (w->y + TITLE_H + PAD));
+        }
+        {                                                /* the eyes follow the pointer */
+            const struct win *fw = &g_win[W_FACE];
+            face_look(&g_face, g_mx - (fw->x + 1 + PAD + FACE_W / 2), g_my - (fw->y + TITLE_H + PAD + FACE_H / 2));
         }
         if (g_drag_win >= 0) {
             struct win *w = &g_win[g_drag_win];
@@ -654,6 +716,11 @@ static void dump_windows(const char *path)
     for (int i = 0; i < WIN_MAX; i++) {
         fprintf(f, "== %s%s\n", g_win[i].title, g_win[i].visible ? "" : " [hidden]");
         if (g_win[i].kind == WK_PAINT) { fprintf(f, "(paint %dx%d, %d strokes)\n", g_win[i].paint.w, g_win[i].paint.h, g_win[i].paint.strokes); continue; }
+        if (g_win[i].kind == WK_FACE) {
+            long now = now_ms();
+            fprintf(f, "(face stage=%d mood=%d bond=%d body=%d expr=%s label=%s)\n", g_face.stage, g_face.mood, g_face.bond, g_face.body, face_expr(&g_face, now), g_face.label);
+            continue;
+        }
         char row[1024];
         for (int y = 0; y < g_win[i].rows; y++) { term_row(&g_win[i].term, y, row, sizeof row); fprintf(f, "%s\n", row); }
     }
@@ -758,6 +825,11 @@ int main(void)
     if (pw < 200) pw = 200;
     if (ph < 120) ph = 120;
     win_init_paint(&g_win[W_PAINT], g_apps[W_PAINT].title, pw, ph, (g_fb.w - pw - 2 * PAD - 2) / 2, BAR_H + 40);
+    /* The face: to the right of the chat when the screen is wide enough, else at the right edge. */
+    int fx = 16 + ccols * FONT_W + 2 * PAD + 2 + 12, fw = FACE_W + 2 * PAD + 2;
+    if (fx + fw > g_fb.w - 8) fx = g_fb.w - fw - 8;
+    win_init_face(&g_win[W_FACE], g_apps[W_FACE].title, fx, BAR_H + 12);
+    face_init(&g_face, now_ms());
     for (int i = 0; i < WIN_MAX; i++) g_win[i].visible = g_apps[i].visible_at_start;
     g_mx = g_fb.w / 2;
     g_my = g_fb.h / 2;
@@ -779,7 +851,7 @@ int main(void)
     const char *mouse_script = g_script ? getenv("ALTEREGO_SCRIPT_MOUSE") : NULL;
     if (g_script && getenv("ALTEREGO_SCRIPT_KANA")) g_kana_mode = 1;
     if (g_script && (p = getenv("ALTEREGO_SCRIPT_WIN")))
-        raise_win(strcmp(p, "web") == 0 ? W_WEB : strcmp(p, "shell") == 0 ? W_SHELL : strcmp(p, "paint") == 0 ? W_PAINT : W_CHAT);
+        raise_win(strcmp(p, "web") == 0 ? W_WEB : strcmp(p, "shell") == 0 ? W_SHELL : strcmp(p, "paint") == 0 ? W_PAINT : strcmp(p, "face") == 0 ? W_FACE : W_CHAT);
     if (g_script && getenv("ALTEREGO_SCRIPT_MENU")) g_menu_open = 1;      /* show the menu in the screenshot */
     while (!g_stop) {
         if (g_script && now_ms() >= script_next) {
@@ -815,14 +887,14 @@ int main(void)
         }
         int first_in = n;
         n += input_pollfds(&g_in, pfd + n, INPUT_MAX_DEV);
-        int r = poll(pfd, (nfds_t)n, g_script ? 30 : 500);
+        int face_live = g_win[W_FACE].visible && !g_script;
+        int r = poll(pfd, (nfds_t)n, g_script ? 30 : face_live ? FACE_FPS_MS : 500);
         if (r < 0 && errno != EINTR) break;
         for (int i = 0; i < WIN_MAX; i++) {
             if (widx[i] < 0 || !(pfd[widx[i]].revents & (POLLIN | POLLHUP))) continue;
             char buf[4096];
             ssize_t k = read(g_win[i].fd, buf, sizeof buf);
-            if (k > 0) { term_feed(&g_win[i].term, buf, (size_t)k); g_dirty = 1; }
-            if (g_win[i].term.osc_ready) { g_win[i].term.osc_ready = 0; handle_osc(g_win[i].term.osc); }
+            if (k > 0) { term_feed(&g_win[i].term, buf, (size_t)k); g_dirty = 1; }     /* OSC requests come back through on_term_osc */
         }
         for (int d = g_in.n - 1; d >= 0; d--) {
             if (first_in + d >= n || !(pfd[first_in + d].revents & (POLLIN | POLLHUP | POLLERR))) continue;
@@ -836,7 +908,9 @@ int main(void)
             if (g_win[i].fd < 0 && g_win[i].respawn_at && now >= g_win[i].respawn_at) win_spawn(&g_win[i]);
         if (now - last_scan >= 2) { last_scan = now; if (input_scan(&g_in) != kbd + ptr) { kbd = ptr = 0; for (int i = 0; i < g_in.n; i++) { if (g_in.dev[i].kind == DEV_KEYBOARD) kbd++; else ptr++; } } }
         if (now / 60 != last_minute) { last_minute = now / 60; g_dirty = 1; }
+        int face_moved = face_live && now_ms() - g_face_drawn >= FACE_FPS_MS && face_tick(&g_face, now_ms());
         if (g_dirty) render();
+        else if (face_moved) render_face();
     }
     for (int i = 0; i < WIN_MAX; i++) if (g_win[i].pid > 0) kill(g_win[i].pid, SIGTERM);
     return 0;
