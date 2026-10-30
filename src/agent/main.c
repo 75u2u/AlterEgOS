@@ -330,7 +330,7 @@ int main(void)
         }
         /* Asking about the mind itself ("ステータス", "what do you remember")
          * is a question to AlterEgo, not something to learn from. */
-        if (!brain_is_query(line)) {
+        if (!brain_is_query(line) && !brain_is_play(b, line)) {
             brain_learn(b, line);
             if (store) { store_append(LOG_FILE, line); save_self(b, &p); }
         }
