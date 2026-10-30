@@ -22,8 +22,8 @@ struct play {
     enum play_mode mode;
     int wins, losses, draws;        /* じゃんけん, AlterEgo's point of view; kept in bond.txt */
     int secret, tries, lo, hi;      /* 数当て */
-    char last[32];                  /* しりとり: the word AlterEgo said last (hiragana) */
-    char used[PLAY_USED_MAX][32];   /* ... and every word said so far */
+    char last[48];                  /* しりとり: the word AlterEgo said last (hiragana) */
+    char used[PLAY_USED_MAX][48];   /* ... and every word said so far */
     int nused;
     int riddle, hints;              /* なぞなぞ: the open riddle */
     int rounds;                     /* games played in this life */

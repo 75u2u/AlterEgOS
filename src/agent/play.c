@@ -288,7 +288,7 @@ int play_wants(const struct play *g, const char *line, const char *lo)
 {
     if (ask_of(g, line, lo) != A_NONE) return 1;
     long v;
-    char hira[64];
+    char hira[48];
     switch (g->mode) {
     case PLAY_GUESS: return number_in(line, &v);
     case PLAY_SHIRITORI: return utf8_count(line) <= 12 && !has(line, " ") && !has(line, "　") && (to_hiragana(line, hira, sizeof hira) || has(line, "ひらがな"));
@@ -339,7 +339,7 @@ static void janken_throw(struct play *g, int en, int stage, const char *you, int
 
 static void shiritori_turn(struct play *g, int en, int stage, const char *you, const char *in, uint64_t *rng, char *out, size_t cap, char *expr, size_t ecap, int *mood)
 {
-    char hira[64], kb[8];
+    char hira[48], kb[8];
     if (!to_hiragana(in, hira, sizeof hira)) {
         snprintf(out, cap, en ? "In しりとり, say the word in kana, %s." : "しりとりは、ひらがなかカタカナで言ってね、%s。", you);
         return;
