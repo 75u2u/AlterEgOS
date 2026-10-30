@@ -207,6 +207,7 @@ static void osc_end(struct term *t)
     if (t->osc_len < 0) return;
     t->osc[t->osc_len] = '\0';
     t->osc_ready = 1;
+    if (t->on_osc) { t->on_osc(t, t->osc, t->osc_arg); t->osc_ready = 0; }
 }
 
 static void byte(struct term *t, unsigned char b)

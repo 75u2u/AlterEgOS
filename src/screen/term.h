@@ -40,6 +40,11 @@ struct term {
     char osc[4096];
     int osc_len;
     int osc_ready;
+    /* Or a callback for each one as it completes (two in one read, such
+     * as an open request and the face's state on the same line, both
+     * arrive this way). */
+    void (*on_osc)(struct term *t, const char *osc, void *arg);
+    void *osc_arg;
 };
 
 int  term_init(struct term *t, int cols, int rows);
