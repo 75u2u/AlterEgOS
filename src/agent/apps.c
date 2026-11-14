@@ -7,6 +7,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "apps.h"
 #include "drawings.h"
@@ -28,10 +29,10 @@ static int has_word(const char *lo, const char *w)
 /* ------------------------------------------------------------------------ */
 /* windows */
 
-enum { APP_NONE = -1, APP_CHAT, APP_SHELL, APP_WEB, APP_PAINT };
-static const char *const app_id[] = { "chat", "shell", "web", "paint" };
-static const char *const app_ja[] = { "チャット", "シェル", "ブラウザ", "ペイント" };
-static const char *const app_en[] = { "the chat", "the shell", "the browser", "paint" };
+enum { APP_NONE = -1, APP_CHAT, APP_SHELL, APP_WEB, APP_PAINT, APP_PROCS };
+static const char *const app_id[] = { "chat", "shell", "web", "paint", "procs" };
+static const char *const app_ja[] = { "チャット", "シェル", "ブラウザ", "ペイント", "プロセスの図" };
+static const char *const app_en[] = { "the chat", "the shell", "the browser", "paint", "the process picture" };
 
 static int app_in(const char *line, const char *lo)
 {
@@ -39,7 +40,49 @@ static int app_in(const char *line, const char *lo)
     if (has(line, "ブラウザ") || has_word(lo, "browser") || has_word(lo, "web")) return APP_WEB;
     if (has(line, "シェル") || has(line, "ターミナル") || has(line, "端末") || has_word(lo, "shell") || has_word(lo, "terminal")) return APP_SHELL;
     if (has(line, "チャット") || has_word(lo, "chat")) return APP_CHAT;
+    if (has(line, "プロセス") || has(line, "ぷろせす") || has_word(lo, "process") || has_word(lo, "processes")) return APP_PROCS;
     return APP_NONE;
+}
+
+/* 「プロセスを見せて」: a look at the picture, where 開いて is not the natural word. */
+static int wants_show(const char *line, const char *lo)
+{
+    return has(line, "見せて") || has(line, "みせて") || has(line, "見たい") || has(line, "みたい") || has(line, "見える") || has(line, "可視化") || has(line, "図に") ||
+           has_word(lo, "show") || has_word(lo, "visualize") || has_word(lo, "visualise") || has_word(lo, "see");
+}
+
+/* What the picture will show, read from /proc here too, so that AlterEgo can
+ * say a word about it: how many processes, how many running, the one that
+ * has worked hardest (by CPU time so far; kernel threads do not count). */
+static void procs_glance(int *total, int *running, char *hot, size_t hcap)
+{
+    *total = *running = 0;
+    hot[0] = '\0';
+    unsigned long best = 0;
+    DIR *d = opendir("/proc");
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] < '1' || e->d_name[0] > '9') continue;
+        char path[64], buf[512];
+        snprintf(path, sizeof path, "/proc/%.32s/stat", e->d_name);
+        FILE *f = fopen(path, "r");
+        if (!f) continue;
+        size_t n = fread(buf, 1, sizeof buf - 1, f);
+        fclose(f);
+        buf[n] = '\0';
+        char *lp = strchr(buf, '('), *rp = strrchr(buf, ')');
+        if (!lp || !rp || rp < lp) continue;
+        char st = ' ';
+        int ppid = 0;
+        unsigned long ut = 0, stt = 0;
+        if (sscanf(rp + 1, " %c %d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu", &st, &ppid, &ut, &stt) < 2) continue;
+        if (ppid == 2 || atoi(e->d_name) == 2) continue;
+        (*total)++;
+        if (st == 'R') (*running)++;
+        if (ut + stt >= best && (ut + stt > best || !hot[0])) { best = ut + stt; snprintf(hot, hcap, "%.*s", (int)(rp - lp - 1), lp + 1); }
+    }
+    closedir(d);
 }
 
 static int wants_open(const char *line, const char *lo)
@@ -138,6 +181,8 @@ static int handle_window(enum brain_lang lang, const char *you, const char *line
         snprintf(r->action, sizeof r->action, "search %.100s", words);
         return 1;
     }
+    if (app == APP_PROCS && !close && !open && wants_show(line, lo)) open = 1;
+    if (app == APP_PROCS && !screen) return 0;                          /* no desktop: the ps text answers */
     if (app == APP_NONE || (!open && !close)) return 0;
     if (close && !open) {
         if (!screen) { snprintf(out, cap, en ? "There is no screen here, so nothing to close." : "ここには画面がないから、閉じる窓もない。"); return 1; }
@@ -148,6 +193,15 @@ static int handle_window(enum brain_lang lang, const char *you, const char *line
     }
     if (!screen) { snprintf(out, cap, en ? "I have no screen here, so I cannot open %s. On the desktop, say it again." : "ここには画面がないから、%sは開けない。画面のある時に言って。", en ? app_en[app] : app_ja[app]); return 1; }
     if (app == APP_PAINT) snprintf(out, cap, en ? "Opening paint. Draw something and press 「見せる」 so I can see it." : "ペイントを開くね。描いたら「見せる」を押して、私にも見せて。");
+    else if (app == APP_PROCS) {
+        int total, running;
+        char hot[64];
+        procs_glance(&total, &running, hot, sizeof hot);
+        if (en) snprintf(out, cap, "Here is the picture of what is running %s: %d processes, %d busy right now%s%s. The bubble in the middle is %s, the lines go from a parent to what it started, the size is memory and orange means running this very moment.",
+                         getpid() == 1 ? "inside me" : "on this machine", total, running, hot[0] ? ", the hardest worker so far is " : "", hot, getpid() == 1 ? "me (PID 1)" : "PID 1");
+        else snprintf(out, cap, "%sの図を出すね。いまプロセスは %d 個、そのうち %d 個が動いている最中%s%s。真ん中の丸が%sで、線は親から生んだ子へ。丸の大きさがメモリ、オレンジは今まさに動いているもの。",
+                      getpid() == 1 ? "私の中で動いているもの" : "この機械で動いているもの", total, running, hot[0] ? "、いちばん働いているのは " : "", hot, getpid() == 1 ? "私(PID 1)" : "PID 1");
+    }
     else if (app == APP_WEB) snprintf(out, cap, en ? "Opening the browser." : "ブラウザを開くね。");
     else snprintf(out, cap, en ? "Opening %s." : "%sを開くね。", en ? app_en[app] : app_ja[app]);
     ask_desktop(out, cap, "open", app, NULL);

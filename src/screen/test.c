@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "canvas.h"
@@ -13,6 +14,7 @@
 #include "ime.h"
 #include "kana.h"
 #include "paint.h"
+#include "procs.h"
 #include "term.h"
 
 static int fails;
@@ -465,12 +467,99 @@ static void test_face(const char *fontpath)
     font_free(&f);
 }
 
+/* The process picture: a made-up /proc is read, kernel threads fold into
+ * one bubble, the tree becomes rings, CPU comes from the difference between
+ * two looks, the pointer names a bubble, and it draws inside its box. */
+static void test_procs(const char *fontpath)
+{
+    struct font f;
+    if (font_load(&f, fontpath) < 0) { CHECK(0, "font %s", fontpath); return; }
+    char dir[] = "/tmp/alterego-procs-XXXXXX";
+    if (!mkdtemp(dir)) { CHECK(0, "mkdtemp"); return; }
+    static const struct { int pid; const char *name; char st; int ppid; unsigned long ut, st_t; long rss; } fake[] = {
+        { 1, "alterego", 'S', 0, 120, 40, 2300 }, { 2, "kthreadd", 'S', 0, 0, 0, 0 }, { 3, "rcu_gp", 'I', 2, 0, 0, 0 },
+        { 15, "ksoftirqd/0", 'S', 2, 3, 0, 0 }, { 40, "alterego-screen", 'R', 1, 300, 80, 900 }, { 41, "alterego", 'S', 40, 40, 10, 1500 },
+        { 42, "sh", 'S', 40, 2, 0, 400 }, { 43, "alterego-web", 'S', 40, 8, 2, 700 }, { 50, "mkfs.btrfs", 'D', 42, 60, 90, 1200 },
+    };
+    char path[320], sub[300];
+    for (size_t i = 0; i < sizeof fake / sizeof fake[0]; i++) {
+        snprintf(sub, sizeof sub, "%s/%d", dir, fake[i].pid);
+        mkdir(sub, 0700);
+        snprintf(path, sizeof path, "%s/stat", sub);
+        FILE *fp = fopen(path, "w");
+        if (fp) {
+            fprintf(fp, "%d (%s) %c %d 1 1 0 -1 4194560 100 0 0 0 %lu %lu 0 0 20 0 1 0 100 1234 %ld\n",
+                    fake[i].pid, fake[i].name, fake[i].st, fake[i].ppid, fake[i].ut, fake[i].st_t, fake[i].rss);
+            fclose(fp);
+        }
+    }
+    struct procs p;
+    procs_init(&p, 520, 400);
+    p.root = dir;
+    long now = 700000;
+    CHECK(procs_sample(&p, now) == 7, "9 processes, 3 kernel threads folded: %d bubbles", p.count);
+    CHECK(p.total == 9 && p.kernel == 3 && p.running == 1, "total %d kernel %d running %d", p.total, p.kernel, p.running);
+    int core = -1, scr = -1, sh = -1, mk = -1, kern = -1;
+    for (int i = 0; i < p.count; i++) {
+        if (p.n[i].pid == 1) core = i;
+        if (p.n[i].pid == 40) scr = i;
+        if (p.n[i].pid == 42) sh = i;
+        if (p.n[i].pid == 50) mk = i;
+        if (p.n[i].state == 'K') kern = i;
+    }
+    CHECK(core >= 0 && scr >= 0 && sh >= 0 && mk >= 0 && kern >= 0, "every bubble is there");
+    CHECK(p.n[core].depth == 0 && p.n[scr].depth == 1 && p.n[sh].depth == 2 && p.n[mk].depth == 3, "depths %d %d %d %d", p.n[core].depth, p.n[scr].depth, p.n[sh].depth, p.n[mk].depth);
+    CHECK(p.n[scr].parent == core && p.n[mk].parent == sh && p.n[kern].parent == core, "the lines go to the parents");
+    CHECK(p.n[kern].kernel == 3 && strcmp(p.n[kern].name, "カーネル") == 0, "the kernel bubble holds %d threads", p.n[kern].kernel);
+    CHECK(p.n[scr].leaves == 3, "three leaves hang below the screen: %d", p.n[scr].leaves);
+    CHECK(p.n[core].x == 260 && abs(p.n[core].y - 200) <= 2, "PID 1 in the middle: %d,%d", p.n[core].x, p.n[core].y);
+    int dx = p.n[mk].x - p.n[core].x, dy = p.n[mk].y - p.n[core].y, dx1 = p.n[scr].x - p.n[core].x, dy1 = p.n[scr].y - p.n[core].y;
+    CHECK(dx * dx + dy * dy > dx1 * dx1 + dy1 * dy1, "the deeper bubble is on an outer ring");
+    CHECK(p.n[mk].r > p.n[sh].r, "more memory, a bigger bubble: %d > %d", p.n[mk].r, p.n[sh].r);
+    CHECK(strcmp(procs_hot(&p), "alterego-screen") == 0, "the hardest worker so far: %s", procs_hot(&p));
+    char buf[256];
+    CHECK(strstr(procs_summary(&p, buf, sizeof buf), "プロセス 6 ・ 動いている 1") != NULL, "summary: %s", buf);
+    /* a second look one second later: the screen used 50 ticks = 50%% of a 100 Hz second */
+    snprintf(path, sizeof path, "%s/40/stat", dir);
+    FILE *fp = fopen(path, "w");
+    if (fp) { fprintf(fp, "40 (alterego-screen) R 1 1 1 0 -1 4194560 100 0 0 0 330 100 0 0 20 0 1 0 100 1234 900\n"); fclose(fp); }
+    p.tick_hz = 100;
+    procs_sample(&p, now + 1000);
+    CHECK(p.n[scr].cpu == 500, "CPU since the last look: %d.%d%%", p.n[scr].cpu / 10, p.n[scr].cpu % 10);
+    CHECK(strstr(procs_summary(&p, buf, sizeof buf), "忙しい: alterego-screen 50.0%") != NULL, "summary: %s", buf);
+    /* the pointer names a bubble; away from them, nothing */
+    procs_look(&p, p.n[mk].x + 2, p.n[mk].y - 2);
+    CHECK(p.hover == mk, "hover %d", p.hover);
+    procs_look(&p, -1000, -1000);
+    CHECK(p.hover == -1, "no hover");
+    /* it draws: the bubble's colour at its centre, nothing outside the box, the frame only changes when something moves */
+    struct canvas cv;
+    canvas_init(&cv, 540, 420);
+    canvas_fill(&cv, 0, 0, cv.w, cv.h, 0x123456);
+    procs_draw(&p, &cv, &f, 10, 10, now + 1000);
+    CHECK(cv.px[(size_t)(10 + p.n[mk].y) * cv.w + 10 + p.n[mk].x] == 0xFF5F5F, "mkfs waits for the disk: red %06x", cv.px[(size_t)(10 + p.n[mk].y) * cv.w + 10 + p.n[mk].x]);
+    CHECK(cv.px[(size_t)(10 + p.n[sh].y) * cv.w + 10 + p.n[sh].x] == 0x5FA8FF, "sh sleeps: blue %06x", cv.px[(size_t)(10 + p.n[sh].y) * cv.w + 10 + p.n[sh].x]);
+    CHECK(cv.px[(size_t)(10 + p.n[core].y) * cv.w + 10 + p.n[core].x] == 0x5FA8FF && cv.px[(size_t)(10 + p.n[core].y) * cv.w + 10 + p.n[core].x + 11] == 0xF2F5FA, "PID 1 is a core in a white shell");
+    int outside = 0;
+    for (int y = 0; y < cv.h; y++) for (int x = 0; x < cv.w; x++)
+        if ((x < 10 || y < 10 || x >= 10 + 520 || y >= 10 + 400) && cv.px[(size_t)y * cv.w + x] != 0x123456) outside++;
+    CHECK(outside == 0, "%d pixels outside the box", outside);
+    CHECK(procs_tick(&p, now + 1000) == 0, "nothing moved: no redraw");
+    CHECK(procs_tick(&p, now + 1300) == 1, "the busy bubble pulses: redraw");
+    CHECK(procs_tick(&p, now + 2100) == 1, "a second passed: look again");
+    canvas_free(&cv);
+    for (size_t i = 0; i < sizeof fake / sizeof fake[0]; i++) { snprintf(path, sizeof path, "%s/%d/stat", dir, fake[i].pid); unlink(path); snprintf(sub, sizeof sub, "%s/%d", dir, fake[i].pid); rmdir(sub); }
+    rmdir(dir);
+    font_free(&f);
+}
+
 int main(int argc, char **argv)
 {
     test_kana();
     test_term();
     test_paint(argc > 1 ? argv[1] : "font.hex");
     test_face(argc > 1 ? argv[1] : "font.hex");
+    test_procs(argc > 1 ? argv[1] : "font.hex");
     test_font(argc > 1 ? argv[1] : "font.hex");
     test_dict(argc > 2 ? argv[2] : "dict.txt");
     if (fails) { fprintf(stderr, "%d check(s) failed\n", fails); return 1; }

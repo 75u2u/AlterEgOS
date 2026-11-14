@@ -38,6 +38,7 @@
 #include "ime.h"
 #include "input.h"
 #include "paint.h"
+#include "procs.h"
 #include "pty.h"
 #include "term.h"
 
@@ -48,7 +49,7 @@
 #define BAR_H     24
 #define TITLE_H   20
 #define PAD       4
-#define WIN_MAX   5
+#define WIN_MAX   6
 
 #define C_DESK    0x1E2430
 #define C_BAR     0x2B3340
@@ -73,11 +74,11 @@ static const uint32_t g_ansi[16] = {
     0x3A4250, 0xE06C75, 0x98C379, 0xE5C07B, 0x61AFEF, 0xC678DD, 0x56B6C2, 0xD0D0D0,
     0x7F8894, 0xFF8A94, 0xB5E890, 0xFFD866, 0x7FC8FF, 0xE0A0FF, 0x7FE0E8, 0xFFFFFF };
 
-enum { W_CHAT = 0, W_SHELL = 1, W_WEB = 2, W_PAINT = 3, W_FACE = 4 };
-enum { WK_TERM = 0, WK_PAINT = 1, WK_FACE = 2 };
+enum { W_CHAT = 0, W_SHELL = 1, W_WEB = 2, W_PAINT = 3, W_FACE = 4, W_PROC = 5 };
+enum { WK_TERM = 0, WK_PAINT = 1, WK_FACE = 2, WK_PROC = 3 };
 
 /* An app is a window: a program on a pty, or something drawn by the
- * desktop itself (paint, AlterEgo's face). The アプリ menu lists this table; adding an
+ * desktop itself (paint, AlterEgo's face, the process picture). The アプリ menu lists this table; adding an
  * app is adding a row (and a W_ index above). */
 struct app {
     const char *name;           /* in the menu */
@@ -93,6 +94,7 @@ static const struct app g_apps[WIN_MAX] = {
     [W_WEB]   = { "ブラウザ", "ブラウザ (alterego-web)", WK_TERM, "/usr/bin/alterego-web", "ALTEREGO_WEB", 0 },
     [W_PAINT] = { "ペイント", "ペイント", WK_PAINT, NULL, NULL, 0 },
     [W_FACE]  = { "キャラクター", "AlterEgo の顔", WK_FACE, NULL, NULL, 1 },
+    [W_PROC]  = { "プロセス", "プロセス (OS の中で動いているもの)", WK_PROC, NULL, NULL, 0 },
 };
 
 struct win {
@@ -118,9 +120,10 @@ static struct input g_in;
 static struct dict g_dict;
 static struct ime g_ime;
 static struct win g_win[WIN_MAX];
-static int g_order[WIN_MAX] = { W_SHELL, W_PAINT, W_WEB, W_CHAT, W_FACE };     /* bottom to top */
+static int g_order[WIN_MAX] = { W_SHELL, W_PAINT, W_PROC, W_WEB, W_CHAT, W_FACE };     /* bottom to top */
 static struct face g_face;                              /* AlterEgo's character (face.c) */
 static long g_face_drawn;                               /* ms: when the face was last drawn */
+static struct procs g_procs;                            /* the process picture (procs.c) */
 static int g_focus = W_CHAT;
 static int g_kana_mode = 0;
 static int g_mx, g_my;                                  /* mouse pointer */
@@ -174,8 +177,8 @@ static void kmsg(const char *fmt, ...)
 
 /* ---- windows */
 
-static int win_w(const struct win *w) { return (w->kind == WK_PAINT ? paint_width(&w->paint) : w->kind == WK_FACE ? FACE_W : w->cols * FONT_W) + 2 * PAD + 2; }
-static int win_h(const struct win *w) { return TITLE_H + (w->kind == WK_PAINT ? paint_height(&w->paint) : w->kind == WK_FACE ? FACE_H : w->rows * FONT_H) + 2 * PAD + 2; }
+static int win_w(const struct win *w) { return (w->kind == WK_PAINT ? paint_width(&w->paint) : w->kind == WK_FACE ? FACE_W : w->kind == WK_PROC ? g_procs.w : w->cols * FONT_W) + 2 * PAD + 2; }
+static int win_h(const struct win *w) { return TITLE_H + (w->kind == WK_PAINT ? paint_height(&w->paint) : w->kind == WK_FACE ? FACE_H : w->kind == WK_PROC ? g_procs.h : w->rows * FONT_H) + 2 * PAD + 2; }
 
 static char **child_env(void)
 {
@@ -250,6 +253,18 @@ static void win_init_face(struct win *w, const char *title, int x, int y)
     w->visible = 1;
 }
 
+static void win_init_procs(struct win *w, const char *title, int pw, int ph, int x, int y)
+{
+    memset(w, 0, sizeof *w);
+    w->title = title;
+    w->kind = WK_PROC;
+    w->x = x;
+    w->y = y;
+    w->fd = -1;
+    w->visible = 1;
+    procs_init(&g_procs, pw, ph);
+}
+
 /* Bring window i to the front; the keyboard follows unless `keep_focus`
  * (AlterEgo showing a drawing while the user keeps typing in the chat). */
 static void show_win(int i, int keep_focus)
@@ -286,7 +301,7 @@ static void hide_win(int i)
 
 static int app_named(const char *name)
 {
-    static const char *const names[WIN_MAX] = { [W_CHAT] = "chat", [W_SHELL] = "shell", [W_WEB] = "web", [W_PAINT] = "paint", [W_FACE] = "face" };
+    static const char *const names[WIN_MAX] = { [W_CHAT] = "chat", [W_SHELL] = "shell", [W_WEB] = "web", [W_PAINT] = "paint", [W_FACE] = "face", [W_PROC] = "procs" };
     for (int i = 0; i < WIN_MAX; i++) if (strcmp(name, names[i]) == 0) return i;
     return -1;
 }
@@ -435,6 +450,7 @@ static void draw_win(int i)
         face_draw(&g_face, &g_cv, &g_font, ox, oy, g_face_drawn);
         return;
     }
+    if (w->kind == WK_PROC) { procs_draw(&g_procs, &g_cv, &g_font, ox, oy, now_ms()); return; }
     for (int y = 0; y < w->rows; y++) {
         for (int x = 0; x < w->cols; x++) {
             const struct cell *c = w->term.cells + (size_t)y * w->cols + x;
@@ -500,10 +516,10 @@ static void draw_pointer(void)
 
 static void render(void);
 
-/* Is anything drawn over the face window: a window above it in the order, or the menu? */
-static int face_covered(void)
+/* Is anything drawn over window i: a window above it in the order, or the menu? */
+static int win_covered(int i)
 {
-    const struct win *fw = &g_win[W_FACE];
+    const struct win *fw = &g_win[i];
     int fx1 = fw->x + win_w(fw), fy1 = fw->y + win_h(fw), above = 0;
     for (int k = 0; k < WIN_MAX; k++) {
         const struct win *w = &g_win[g_order[k]];
@@ -514,13 +530,14 @@ static int face_covered(void)
     return g_menu_open;
 }
 
-/* The face moved and nothing else did: redraw its window alone and put only
- * that part on the screen, so that an animated character costs little. */
-static void render_face(void)
+/* Window i moved (the face, the process picture) and nothing else did:
+ * redraw it alone and put only that part on the screen, so that an
+ * animated window costs little. */
+static void render_win(int i)
 {
-    const struct win *fw = &g_win[W_FACE];
-    if (face_covered()) { render(); return; }
-    draw_win(W_FACE);
+    const struct win *fw = &g_win[i];
+    if (win_covered(i)) { render(); return; }
+    draw_win(i);
     draw_pointer();
     if (g_fb.mem) fb_blit_rect(&g_fb, &g_cv, fw->x, fw->y, win_w(fw), win_h(fw));
     else if (g_snapshot) write_ppm(g_snapshot);
@@ -656,6 +673,11 @@ static void on_input(const struct input_ev *e)
             const struct win *fw = &g_win[W_FACE];
             face_look(&g_face, g_mx - (fw->x + 1 + PAD + FACE_W / 2), g_my - (fw->y + TITLE_H + PAD + FACE_H / 2));
         }
+        if (g_win[W_PROC].visible) {                     /* a process under the pointer is named */
+            const struct win *pw = &g_win[W_PROC];
+            int inside = win_at(g_mx, g_my) == W_PROC;
+            procs_look(&g_procs, inside ? g_mx - (pw->x + 1 + PAD) : -1000, inside ? g_my - (pw->y + TITLE_H + PAD) : -1000);
+        }
         if (g_drag_win >= 0) {
             struct win *w = &g_win[g_drag_win];
             w->x = g_mx - g_drag_dx;
@@ -719,6 +741,10 @@ static void dump_windows(const char *path)
         if (g_win[i].kind == WK_FACE) {
             long now = now_ms();
             fprintf(f, "(face stage=%d mood=%d bond=%d body=%d expr=%s label=%s)\n", g_face.stage, g_face.mood, g_face.bond, g_face.body, face_expr(&g_face, now), g_face.label);
+            continue;
+        }
+        if (g_win[i].kind == WK_PROC) {
+            fprintf(f, "(procs n=%d total=%d running=%d kernel=%d hot=%s)\n", g_procs.count, g_procs.total, g_procs.running, g_procs.kernel, procs_hot(&g_procs));
             continue;
         }
         char row[1024];
@@ -830,6 +856,14 @@ int main(void)
     if (fx + fw > g_fb.w - 8) fx = g_fb.w - fw - 8;
     win_init_face(&g_win[W_FACE], g_apps[W_FACE].title, fx, BAR_H + 12);
     face_init(&g_face, now_ms());
+    /* The process picture: 520x400 when the screen has room, hidden until asked for. */
+    int qw = g_fb.w - 80 > 520 ? 520 : g_fb.w - 80, qh = g_fb.h - BAR_H - 120 > 400 ? 400 : g_fb.h - BAR_H - 120;
+    if (qw < 240) qw = 240;
+    if (qh < 200) qh = 200;
+    int qx = g_fb.w - (qw + 2 * PAD + 2) - 8, qy = BAR_H + 12 + FACE_H + TITLE_H + 2 * PAD + 2 + 10;      /* under the face, over the shell */
+    if (qy + TITLE_H + qh + 2 * PAD + 2 > g_fb.h - 4) qy = BAR_H + 40;
+    win_init_procs(&g_win[W_PROC], g_apps[W_PROC].title, qw, qh, qx, qy);
+    if ((p = getenv("ALTEREGO_PROC"))) g_procs.root = p;              /* a made-up /proc (tests, screenshots) */
     for (int i = 0; i < WIN_MAX; i++) g_win[i].visible = g_apps[i].visible_at_start;
     g_mx = g_fb.w / 2;
     g_my = g_fb.h / 2;
@@ -851,7 +885,7 @@ int main(void)
     const char *mouse_script = g_script ? getenv("ALTEREGO_SCRIPT_MOUSE") : NULL;
     if (g_script && getenv("ALTEREGO_SCRIPT_KANA")) g_kana_mode = 1;
     if (g_script && (p = getenv("ALTEREGO_SCRIPT_WIN")))
-        raise_win(strcmp(p, "web") == 0 ? W_WEB : strcmp(p, "shell") == 0 ? W_SHELL : strcmp(p, "paint") == 0 ? W_PAINT : strcmp(p, "face") == 0 ? W_FACE : W_CHAT);
+        raise_win(strcmp(p, "web") == 0 ? W_WEB : strcmp(p, "shell") == 0 ? W_SHELL : strcmp(p, "paint") == 0 ? W_PAINT : strcmp(p, "face") == 0 ? W_FACE : strcmp(p, "procs") == 0 ? W_PROC : W_CHAT);
     if (g_script && getenv("ALTEREGO_SCRIPT_MENU")) g_menu_open = 1;      /* show the menu in the screenshot */
     while (!g_stop) {
         if (g_script && now_ms() >= script_next) {
@@ -888,7 +922,8 @@ int main(void)
         int first_in = n;
         n += input_pollfds(&g_in, pfd + n, INPUT_MAX_DEV);
         int face_live = g_win[W_FACE].visible && !g_script;
-        int r = poll(pfd, (nfds_t)n, g_script ? 30 : face_live ? FACE_FPS_MS : 500);
+        int procs_live = g_win[W_PROC].visible;             /* (also under a script: the bubbles settle before the snapshot) */
+        int r = poll(pfd, (nfds_t)n, g_script ? 30 : face_live ? FACE_FPS_MS : procs_live ? PROCS_FPS_MS : 500);
         if (r < 0 && errno != EINTR) break;
         for (int i = 0; i < WIN_MAX; i++) {
             if (widx[i] < 0 || !(pfd[widx[i]].revents & (POLLIN | POLLHUP))) continue;
@@ -909,8 +944,12 @@ int main(void)
         if (now - last_scan >= 2) { last_scan = now; if (input_scan(&g_in) != kbd + ptr) { kbd = ptr = 0; for (int i = 0; i < g_in.n; i++) { if (g_in.dev[i].kind == DEV_KEYBOARD) kbd++; else ptr++; } } }
         if (now / 60 != last_minute) { last_minute = now / 60; g_dirty = 1; }
         int face_moved = face_live && now_ms() - g_face_drawn >= FACE_FPS_MS && face_tick(&g_face, now_ms());
+        int procs_moved = procs_live && procs_tick(&g_procs, now_ms());
         if (g_dirty) render();
-        else if (face_moved) render_face();
+        else {
+            if (face_moved) render_win(W_FACE);
+            if (procs_moved) render_win(W_PROC);
+        }
     }
     for (int i = 0; i < WIN_MAX; i++) if (g_win[i].pid > 0) kill(g_win[i].pid, SIGTERM);
     return 0;

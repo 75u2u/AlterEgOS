@@ -384,6 +384,25 @@ jobs:
           grep -q '^== ペイント' "$state/windows.txt"
           grep -q '^(paint 640x400, 0 strokes)' "$state/windows.txt"
           python3 scripts/ppm2png.py "$state/shot.ppm" screenshot-paint.png
+      - name: Screen smoke test (the chat opens the process picture, /proc becomes bubbles, the agent says a word)
+        run: |
+          state=$(mktemp -d)
+          ALTEREGO_HEADLESS=1024x768 ALTEREGO_SNAPSHOT="$state/shot.ppm" ALTEREGO_DUMP="$state/windows.txt" \
+          ALTEREGO_SCRIPT=$'プロセスを見せて\n' ALTEREGO_SCRIPT_MOUSE="760,480,m" \
+          ALTEREGO_FONT=src/screen/font.hex ALTEREGO_DICT=src/screen/dict.txt \
+          ALTEREGO_AGENT="$PWD/src/agent/alterego" ALTEREGO_SHELL=/bin/sh ALTEREGO_WEB="$PWD/src/web/alterego-web" \
+          ALTEREGO_STATE="$state" ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml \
+          timeout 60 ./src/screen/alterego-screen
+          cat "$state/windows.txt"
+          grep -q '^AlterEgo: この機械で動いているものの図を出すね。いまプロセスは [0-9]* 個' "$state/windows.txt"
+          grep -q '^== プロセス (OS の中で動いているもの)$' "$state/windows.txt"
+          # the agent, the desktop and the shell at least, kernel threads folded away
+          n=$(sed -n 's/^(procs n=\([0-9]*\) .*/\1/p' "$state/windows.txt"); test "$n" -ge 3
+          grep -q '^(procs n=[0-9]* total=[0-9]* running=[0-9]* kernel=[0-9]* hot=[^ )]*)$' "$state/windows.txt"
+          python3 scripts/ppm2png.py "$state/shot.ppm" screenshot-procs.png
+          # without a desktop the same words still give the ps text
+          out=$(printf 'プロセスを見せて\nexit\n' | ALTEREGO_STATE="$state" ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml ./src/agent/alterego)
+          echo "$out" | grep -q 'PID'
       - name: Screen smoke test (the chat opens the paint window, 見せる hands the picture to AlterEgo)
         run: |
           state=$(mktemp -d)
@@ -466,6 +485,7 @@ jobs:
             screenshot-browser.png
             screenshot-face.png
             screenshot-paint.png
+            screenshot-procs.png
             screenshot-show.png
             screenshot-draw.png
             screenshot-teach.png
