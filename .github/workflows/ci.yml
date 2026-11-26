@@ -121,6 +121,44 @@ jobs:
           echo "$out" | grep -q '^hi there$'
           echo "$out" | grep -q '^user> AlterEgo: Forgot "greet"\.'
           echo "$out" | grep -q '「挨拶」 → echo hello'
+      - name: Agent smoke test (an ability it lacks is built on the spot from parts, kept, and used again)
+        run: |
+          state=$(mktemp -d)
+          run() { ALTEREGO_STATE="$state" ALTEREGO_PERSONA=buildroot/board/alteregos/rootfs-overlay/etc/alterego/persona.toml ./src/agent/alterego; }
+          d=$(mktemp -d)
+          printf 'りんご\nみかん\nりんご りんご\n' > "$d/a.txt"; echo hi > "$d/b.txt"; echo x > "$d/c.log"; mkdir "$d/sub"; echo deep > "$d/sub/d.txt"
+          # a newborn asked for something it has no ability for builds one from parts, keeps it under the blanked
+          # sentence, and uses it again for another place; 「違う」 tries the next part; a missing place, an
+          # impossible wish, and 「作ったもの」
+          out=$(printf "$d の中の txt ファイルを数えて\n$d/sub の中の txt ファイルを数えて\n$d の中の txt ファイルを全部数えて\n違う\n$d/a.txt に「りんご」は何回出てくる？\n$d/a.txt の「りんご」を「もも」に置き換えて\n/nowhere/x の中の txt ファイルを数えて\n$d を踊らせて\n作ったもの\nexit\n" | run)
+          echo "$out"
+          echo "$out" | grep -q '^user> AlterEgo: 2$'
+          echo "$out" | grep -q '作った。「{path} の中の {ext} ファイルを数えて」'
+          echo "$out" | grep -q '^(前に作った手「{path} の中の {ext} ファイルを数えて」で)$'
+          echo "$out" | grep -q '^user> AlterEgo: 3$'
+          echo "$out" | grep -q '作った。「{path} の中の {ext} ファイルを全部数えて」'
+          echo "$out" | grep -q '作った。「{path} に「{word}」は何回出てくる」'
+          echo "$out" | grep -q '作った。「{path} の「{word}」を「{word2}」に置き換えて」'
+          test "$(head -n 1 "$d/a.txt")" = 'もも'
+          echo "$out" | grep -q '^user> AlterEgo: /nowhere/x は無い。$'
+          echo "$out" | grep -q '^user> AlterEgo: それはまだ作れない。持っている部品は: 数える'
+          echo "$out" | grep -q '^user> AlterEgo: 自分で作った手:$'
+          echo "$out" | grep -q "^  - 「{path} の中の {ext} ファイルを数えて」 → find {path} -maxdepth 1 -type f -name '\*.{ext}' | wc -l$"
+          test "$(grep -c . "$state/skills.txt")" = 4
+          grep -q "^{path} の中の {ext} ファイルを全部数えて	find {path} -maxdepth 1 -type f -name '\*.{ext}' | wc -l$" "$state/skills.txt"
+          grep -q "find '$d' -maxdepth 1 -type f -name '\*.txt' | wc -l" "$state/actions.log"
+          # the built abilities survive a restart; English builds the same way
+          out=$(printf "$d/sub の中の log ファイルを数えて\ncount the txt files in $d\nfind the files containing \"hi\" in $d\nshow me the 2 biggest files in $d\nwhat did you make\nexit\n" | run)
+          echo "$out"
+          echo "$out" | grep -q '^user> AlterEgo: やった。$'
+          echo "$out" | grep -q '^(前に作った手「{path} の中の {ext} ファイルを数えて」で)$'
+          echo "$out" | grep -q 'built it. "count the {ext} files in {path}"'
+          echo "$out" | grep -q "^user> AlterEgo: $d/b.txt$"
+          echo "$out" | grep -q 'built it. "find the files containing "{word}" in {path}"'
+          test "$(echo "$out" | grep -c "^\(user> AlterEgo: \)\?4	$d/")" = 2
+          echo "$out" | grep -q 'built it. "show me the {n} biggest files in {path}"'
+          echo "$out" | grep -q '^user> AlterEgo: What I built myself:$'
+          test "$(grep -c . "$state/skills.txt")" = 7
       - name: Agent smoke test (body and reset)
         run: |
           state=$(mktemp -d)

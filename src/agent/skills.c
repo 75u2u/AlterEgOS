@@ -13,14 +13,15 @@
 #include <unistd.h>
 
 #include "apps.h"
+#include "forge.h"
 #include "skills.h"
 #include "store.h"
 
 #define SKILLS_FILE  "skills.txt"
 #define ACTIONS_FILE "actions.log"
 #define SKILLS_MAX   64
-#define TRIG_MAX     64
-#define ACT_MAX      256
+#define TRIG_MAX     FORGE_PAT      /* 160: a blanked sentence fits */
+#define ACT_MAX      FORGE_CMD      /* 256 */
 #define OUT_LINES    20
 #define OUT_BYTES    1800
 #define CMD_SECONDS  30
@@ -33,6 +34,9 @@ struct skills {
     int persistent;                 /* a store exists: skills.txt and actions.log are written */
     char last_cmd[ACT_MAX];         /* the previous raw command, to suggest naming it */
     int repeat_hint;
+    char last_forge[1024];          /* the sentence an ability was last built for (「違う」 tries the next part) */
+    char last_pattern[TRIG_MAX];
+    int forge_alt;
 };
 
 /* ------------------------------------------------------------------------ */
@@ -324,6 +328,7 @@ static const struct { const char *ja, *en; } ability_names[] = {
     { "これは雪だるま(見せた絵の描き方を覚える) / 雪だるまはこう描く: 大きい丸の上に小さい丸 / 雪だるまの描き方を忘れて", "this is a snowman (learn the picture shown) / a snowman is drawn like this: a big circle, a small circle above it / forget how to draw snowman" },
     { "じゃんけん / サイコロ振って / コイン投げて / 数当て / しりとり / なぞなぞ / おみくじ / ダジャレ / 数えて / 歌って / ほめて / 3+4は？(遊ぶ。「遊ぼう」で一覧)", "janken / roll a die / flip a coin / guess the number / shiritori / a riddle / my fortune / a joke / count / sing / praise me / 3+4 (play; \"let's play\" lists them)" },
     { "「X」と言ったら「Y」を実行して(新しいできることを覚える)", "when I say X, run Y (learn a new ability)" },
+    { "/path の中の txt ファイルを数えて / 「〇〇」が入っているファイルを探して / 一番大きいファイルを出して …(持っていない手は、部品を組んでその場で作って覚える。「違う」で別のやり方、「作ったもの」で一覧)", "count the txt files in /path / find files containing \"...\" / show the biggest files ... (an ability I lack is built on the spot from parts and kept; \"not that\" tries another way, \"what did you make\" lists them)" },
     { "何をした？(やったことの記録)", "what did you do (the action log)" },
     { NULL, NULL }
 };
@@ -533,6 +538,69 @@ static int builtin(struct skills *s, struct brain *b, enum brain_lang lang, cons
 
 static int handle(struct skills *s, struct brain *b, enum brain_lang lang, const char *me, const char *you, const char *line_in, char *out, size_t cap, int depth);
 
+/* Build the ability `line` asks for out of parts (forge.c), run it, and
+ * keep it under the blanked sentence. `alt` picks the alt-th part that
+ * fits (0 first; 「違う」 asks for the next). Returns 1 when a reply was
+ * made, 0 when no part fits at all. */
+static int forge_try(struct skills *s, struct brain *b, enum brain_lang lang, const char *line, int alt, char *out, size_t cap)
+{
+    char lo[1024];
+    snprintf(lo, sizeof lo, "%s", line);
+    lower_ascii(lo);
+    int en = lang == BRAIN_EN;
+    int stage = b ? brain_stage(b) : 3;
+    struct forge_plan p;
+    int n = forge_plan(line, lo, en, alt, &p);
+    if (n == 0) {
+        char parts[600];
+        forge_parts(en, parts, sizeof parts);
+        snprintf(out, cap, en ? "I cannot build that yet. The parts I have: %s.\nOr teach me: \"when I say X, run Y\"."
+                              : "それはまだ作れない。持っている部品は: %s。\n「〇〇と言ったら □□ を実行して」で教えてくれれば、そのまま覚える。", parts);
+        return 1;
+    }
+    if (alt >= n) return 0;
+    if (p.need_path) {
+        snprintf(out, cap, en ? "Where? Say it with a place, like \"... in /tmp\"." : "どこの？「/tmp の中の〜」のように場所を入れて言って。");
+        return 1;
+    }
+    struct forge_slots sl;
+    char pat[FORGE_PAT], cmd[2048], result[OUT_BYTES + 128];
+    forge_slots(line, &sl, pat, sizeof pat);
+    struct stat st_;
+    if (sl.have_path && stat(sl.path, &st_) != 0) {
+        snprintf(out, cap, en ? "There is no %s here." : "%s は無い。", sl.path);
+        return 1;
+    }
+    if (!forge_fill(p.cmd, &sl, cmd, sizeof cmd)) {
+        snprintf(out, cap, en ? "I would use %s, but the sentence lacks something it needs (a quoted word, a second path...)." : "%sを使いたいけど、文に足りないものがある(「」の言葉、2 つ目の場所……)。", p.said);
+        return 1;
+    }
+    int st = run_cmd(cmd, result, sizeof result);
+    log_action(s, line, cmd, st);
+    snprintf(s->last_forge, sizeof s->last_forge, "%s", line);
+    snprintf(s->last_pattern, sizeof s->last_pattern, "%s", p.pattern);
+    s->forge_alt = alt;
+    if (st != 0) {
+        snprintf(out, cap, en ? "I built %s (%s), but it did not work (exit %d).%s%s\n%s" : "%s(%s)を作ってみたけど、うまくいかなかった(終了コード %d)。%s%s\n%s",
+                 p.said, cmd, st, result[0] ? "\n" : "", result,
+                 alt + 1 < n ? (en ? "Say \"not that\" and I try another way." : "「違う」と言えば別のやり方を試す。") : (en ? "Teach me instead: \"when I say X, run Y\"." : "「〇〇と言ったら □□ を実行して」で教えてくれてもいい。"));
+        return 1;
+    }
+    size_t o = (size_t)snprintf(out, cap, "%s", result[0] ? result : (en ? "(nothing)" : "(何もなかった)"));
+    if (!p.pattern[0]) {    /* too long a sentence to keep as a trigger */
+        snprintf(out + o, cap - o, en ? "\n── I built %s for this (%s). The sentence is too long to keep, so say it shorter next time." : "\n── いま作った: %s(%s)。文が長すぎて覚えておけないので、次は短く言って。", p.said, p.cmd);
+        return 1;
+    }
+    add_skill(s, p.pattern, p.cmd);
+    if (stage == 0) snprintf(out + o, cap - o, en ? "\n……built it. \"%s\"." : "\n……作った。「%s」。", p.pattern);
+    else snprintf(out + o, cap - o, en ? "\n── I just built %s: %s. From now on I can do \"%s\".%s%s"
+                                       : "\n── いま作った: %s(%s)。これで「%s」ができるようになった。%s%s",
+                  p.said, p.cmd, p.pattern,
+                  alt + 1 < n ? (en ? " If that is not it, say \"not that\"." : " 違っていたら「違う」と言って。") : "",
+                  s->persistent ? "" : (en ? " (nowhere to write it down, so only until I am switched off)" : "(書いておく場所が無いので、電源が切れるまでの間だけ)"));
+    return 1;
+}
+
 static int learned(struct skills *s, struct brain *b, enum brain_lang lang, const char *me, const char *you, const char *line, char *out, size_t cap, int depth)
 {
     char key[512];
@@ -541,7 +609,26 @@ static int learned(struct skills *s, struct brain *b, enum brain_lang lang, cons
     strip_verb(key);
     int i = find_skill(s, key);
     if (i < 0) { snprintf(key, sizeof key, "%.511s", line); trim(key); i = find_skill(s, key); }
-    if (i < 0) return 0;
+    if (i < 0) {
+        /* a built ability: its trigger is a sentence with blanks */
+        struct forge_slots sl;
+        char whole[512];
+        snprintf(whole, sizeof whole, "%.511s", line);
+        trim(whole);
+        for (int k = 0; k < s->n && i < 0; k++)
+            if (strchr(s->s[k].trigger, '{') && (forge_match(s->s[k].trigger, whole, &sl) || forge_match(s->s[k].trigger, key, &sl))) i = k;
+        if (i < 0) return 0;
+        char cmd[2048], result[OUT_BYTES + 128];
+        struct stat st_;
+        if (sl.have_path && stat(sl.path, &st_) != 0) { snprintf(out, cap, lang == BRAIN_EN ? "There is no %s here." : "%s は無い。", sl.path); return 1; }
+        if (!forge_fill(s->s[i].action, &sl, cmd, sizeof cmd)) return 0;
+        int st = run_cmd(cmd, result, sizeof result);
+        log_action(s, line, cmd, st);
+        done_prefix(lang, st, out, cap, result);
+        size_t o = strlen(out);
+        if (st == 0) snprintf(out + o, cap - o, lang == BRAIN_EN ? "\n(with the ability I built before: \"%s\")" : "\n(前に作った手「%s」で)", s->s[i].trigger);
+        return 1;
+    }
     char action[ACT_MAX];
     snprintf(action, sizeof action, "%s", s->s[i].action);
     if (depth < 2 && handle(s, b, lang, me, you, action, out, cap, depth + 1)) return 1;
@@ -584,8 +671,41 @@ static int handle(struct skills *s, struct brain *b, enum brain_lang lang, const
             }
         }
     }
+    /* what was built so far */
+    if (depth == 0 && (has(line, "作ったもの") || has(line, "作った手") || has(line, "つくったもの") || has(lo, "what did you make") || has(lo, "what have you made") || has(lo, "what did you build"))) {
+        size_t o = (size_t)snprintf(out, cap, en ? "What I built myself:" : "自分で作った手:");
+        int k = 0;
+        for (int i = 0; i < s->n && o + 4 < cap; i++)
+            if (strchr(s->s[i].trigger, '{')) { o += (size_t)snprintf(out + o, cap - o, "\n  - 「%s」 → %s", s->s[i].trigger, s->s[i].action); k++; }
+        if (!k) snprintf(out, cap, en ? "Nothing yet. Ask me for something I cannot do to files or words, and I will build it from parts: %s" : "まだ何も。ファイルや言葉への、まだできないことを頼んでくれたら、部品を組んで作る: %s", "");
+        if (!k) { char parts[600]; forge_parts(en, parts, sizeof parts); o = strlen(out); snprintf(out + o, cap - o, "%s", parts); }
+        return 1;
+    }
+    /* 「違う」: the last built ability was not what was meant; try the next part */
+    if (depth == 0 && s->last_forge[0] &&
+        (strcmp(line, "違う") == 0 || strcmp(line, "ちがう") == 0 || has(line, "そうじゃない") || has(line, "そうじゃなく") || has(line, "別のやり方") || has(line, "他のやり方") || has(line, "違うやり方") ||
+         strcmp(lo, "no") == 0 || has(lo, "not that") || has(lo, "another way") || has(lo, "try again") || has(lo, "wrong"))) {
+        int k = find_skill(s, s->last_pattern);
+        if (k >= 0) { memmove(&s->s[k], &s->s[k + 1], (size_t)(s->n - k - 1) * sizeof s->s[0]); s->n--; save_skills(s); }
+        char again[1024];
+        snprintf(again, sizeof again, "%s", s->last_forge);
+        if (forge_try(s, b, lang, again, s->forge_alt + 1, out, cap)) return 1;
+        s->last_forge[0] = '\0';
+        snprintf(out, cap, en ? "I have no other way to build that. Teach me: \"when I say X, run Y\"." : "他のやり方は思いつかない。「〇〇と言ったら □□ を実行して」で教えてくれたら、そのまま覚える。");
+        return 1;
+    }
     if (learned(s, b, lang, me, you, line, out, cap, depth)) return 1;
-    return builtin(s, b, lang, me, you, line, lo, out, cap, depth);
+    /* a sentence the parts fit (「/x の中の txt ファイルを数えて」) is built
+     * before the plain file abilities get to read or list /x; an explicit
+     * command is never rebuilt */
+    int explicit = starts(line, "実行") || starts(lo, "run") || starts(lo, "execute") || line[0] == '$' || line[0] == '!';
+    struct forge_plan plan;
+    if (depth == 0 && !explicit && forge_is_request(line, lo) && forge_plan(line, lo, en, 0, &plan) > 0)
+        return forge_try(s, b, lang, line, 0, out, cap);
+    if (builtin(s, b, lang, me, you, line, lo, out, cap, depth)) return 1;
+    /* nothing I have does it, and no part fits: say what parts there are */
+    if (depth == 0 && !explicit && forge_is_request(line, lo)) return forge_try(s, b, lang, line, 0, out, cap);
+    return 0;
 }
 
 struct skills *skills_new(void)
