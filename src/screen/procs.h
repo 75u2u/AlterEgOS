@@ -15,6 +15,8 @@
  * purple = stopped), and a ring around it is how much of the CPU it took
  * since the last look. Kernel threads are folded into one slate bubble.
  * Busy processes pulse and a spark travels down the line from their parent.
+ * A process with a socket to the outside gets a dotted line to 「外」 in the
+ * corner (/proc/net + /proc/<pid>/fd, see ../agent/procnet.h).
  * It is re-read once a second and only redrawn when something moved.
  * Drawn with circles and lines, no image files. */
 
@@ -38,6 +40,8 @@ struct proc_node {
     int tx, ty;             /* where it belongs */
     int x, y, r;            /* where it is drawn (eases toward tx,ty) */
     long born;              /* ms: first seen, for the arrival flash */
+    int net;                /* connections to the outside */
+    char peer[64];          /* one remote end, "1.2.3.4:443" */
 };
 
 struct procs {
@@ -49,6 +53,7 @@ struct procs {
     int running;                    /* in state R */
     int kernel;                     /* kernel threads folded */
     int hot;                        /* index of the busiest node, -1 */
+    int nnet;                       /* nodes talking to the outside (drawn as dotted lines to 「外」) */
     long sampled, sample_dt;        /* ms: last /proc read and the interval before it */
     long tick_hz;
     int hover;                      /* node under the pointer, -1 */

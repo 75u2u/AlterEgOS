@@ -4,8 +4,8 @@ CFLAGS  ?= -O2
 CFLAGS  += -std=c17 -Wall -Wextra -Werror -Wpedantic
 LDFLAGS += -static -lm
 
-SRC  = screen.c canvas.c dict.c face.c fb.c font.c ime.c input.c kana.c paint.c procs.c pty.c term.c ../agent/utf8.c
-TSRC = test.c canvas.c dict.c face.c font.c ime.c kana.c paint.c procs.c term.c ../agent/utf8.c
+SRC  = screen.c canvas.c dict.c face.c fb.c font.c ime.c input.c kana.c paint.c procs.c pty.c term.c ../agent/procnet.c ../agent/utf8.c
+TSRC = test.c canvas.c dict.c face.c font.c ime.c kana.c paint.c procs.c term.c ../agent/procnet.c ../agent/utf8.c
 
 all: alterego-screen
 

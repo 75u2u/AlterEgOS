@@ -493,6 +493,26 @@ static void test_procs(const char *fontpath)
             fclose(fp);
         }
     }
+    /* the browser holds a socket to 93.184.216.34:443 (an established tcp line, its fd links to the inode), the shell a loopback one (ignored) */
+    snprintf(sub, sizeof sub, "%s/net", dir);
+    mkdir(sub, 0700);
+    snprintf(path, sizeof path, "%s/net/tcp", dir);
+    FILE *nf = fopen(path, "w");
+    if (nf) {
+        fprintf(nf, "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n");
+        fprintf(nf, "   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1000 1 0 100 0 0 10 0\n");
+        fprintf(nf, "   1: 0F00000A:C350 22D8B85D:01BB 01 00000000:00000000 00:00000000 00000000     0        0 2000 1 0 100 0 0 10 0\n");
+        fprintf(nf, "   2: 0100007F:C351 0100007F:1F90 01 00000000:00000000 00:00000000 00000000     0        0 3000 1 0 100 0 0 10 0\n");
+        fclose(nf);
+    }
+    snprintf(sub, sizeof sub, "%s/43/fd", dir);
+    mkdir(sub, 0700);
+    snprintf(path, sizeof path, "%s/43/fd/5", dir);
+    if (symlink("socket:[2000]", path) != 0) CHECK(0, "symlink %s", path);
+    snprintf(sub, sizeof sub, "%s/42/fd", dir);
+    mkdir(sub, 0700);
+    snprintf(path, sizeof path, "%s/42/fd/4", dir);
+    if (symlink("socket:[3000]", path) != 0) CHECK(0, "symlink %s", path);
     struct procs p;
     procs_init(&p, 520, 400);
     p.root = dir;
@@ -519,6 +539,11 @@ static void test_procs(const char *fontpath)
     CHECK(strcmp(procs_hot(&p), "alterego-screen") == 0, "the hardest worker so far: %s", procs_hot(&p));
     char buf[256];
     CHECK(strstr(procs_summary(&p, buf, sizeof buf), "プロセス 6 ・ 動いている 1") != NULL, "summary: %s", buf);
+    CHECK(strstr(buf, "外と話す 1") != NULL, "the browser talks to the outside: %s", buf);
+    int web = -1;
+    for (int i = 0; i < p.count; i++) if (p.n[i].pid == 43) web = i;
+    CHECK(web >= 0 && p.n[web].net == 1 && strcmp(p.n[web].peer, "93.184.216.34:443") == 0, "its peer: %s", web >= 0 ? p.n[web].peer : "?");
+    CHECK(p.n[sh].net == 0, "a loopback socket is not the outside");
     /* a second look one second later: the screen used 50 ticks = 50%% of a 100 Hz second */
     snprintf(path, sizeof path, "%s/40/stat", dir);
     FILE *fp = fopen(path, "w");
@@ -548,6 +573,12 @@ static void test_procs(const char *fontpath)
     CHECK(procs_tick(&p, now + 1300) == 1, "the busy bubble pulses: redraw");
     CHECK(procs_tick(&p, now + 2100) == 1, "a second passed: look again");
     canvas_free(&cv);
+    snprintf(path, sizeof path, "%s/43/fd/5", dir); unlink(path);
+    snprintf(path, sizeof path, "%s/43/fd", dir); rmdir(path);
+    snprintf(path, sizeof path, "%s/42/fd/4", dir); unlink(path);
+    snprintf(path, sizeof path, "%s/42/fd", dir); rmdir(path);
+    snprintf(path, sizeof path, "%s/net/tcp", dir); unlink(path);
+    snprintf(path, sizeof path, "%s/net", dir); rmdir(path);
     for (size_t i = 0; i < sizeof fake / sizeof fake[0]; i++) { snprintf(path, sizeof path, "%s/%d/stat", dir, fake[i].pid); unlink(path); snprintf(sub, sizeof sub, "%s/%d", dir, fake[i].pid); rmdir(sub); }
     rmdir(dir);
     font_free(&f);
