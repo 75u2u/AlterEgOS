@@ -503,11 +503,12 @@ const char *procs_hot(const struct procs *p) { return p->hot >= 0 ? p->n[p->hot]
 const char *procs_summary(const struct procs *p, char *buf, size_t cap)
 {
     int user = p->total - p->kernel;
+    char net[32] = "";
+    if (p->nnet) snprintf(net, sizeof net, " ・ 外と話す %d", p->nnet);
     if (p->hot >= 0 && p->n[p->hot].cpu > 0)
-        snprintf(buf, cap, "プロセス %d ・ 動いている %d ・ 忙しい: %s %d.%d%%", user, p->running, p->n[p->hot].name, p->n[p->hot].cpu / 10, p->n[p->hot].cpu % 10);
+        snprintf(buf, cap, "プロセス %d ・ 動いている %d%s ・ 忙しい: %s %d.%d%%", user, p->running, net, p->n[p->hot].name, p->n[p->hot].cpu / 10, p->n[p->hot].cpu % 10);
     else if (p->hot >= 0)
-        snprintf(buf, cap, "プロセス %d ・ 動いている %d ・ よく働いた: %s", user, p->running, p->n[p->hot].name);
+        snprintf(buf, cap, "プロセス %d ・ 動いている %d%s ・ よく働いた: %s", user, p->running, net, p->n[p->hot].name);
     else snprintf(buf, cap, "プロセスが見えない (%s が読めない)", p->root);
-    if (p->hot >= 0 && p->nnet) { size_t o = strlen(buf); snprintf(buf + o, cap - o, " ・ 外と話す %d", p->nnet); }
     return buf;
 }
