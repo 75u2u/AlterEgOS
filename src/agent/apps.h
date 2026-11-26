@@ -10,7 +10,9 @@
  *     「〇〇を調べて」 / 「シェルを閉じて」: the agent cannot draw windows
  *     itself, so it asks the desktop by printing an OSC string
  *     ESC ] 7700;open;<app>[;url] ESC \ that the screen's terminal emulator
- *     keeps for the desktop (ALTEREGO_SCREEN=1 says there is one),
+ *     keeps for the desktop (ALTEREGO_SCREEN=1 says there is one);
+ *     「プロセスを見せて」 opens the process picture with a word about
+ *     what it shows (without a desktop the ps text answers instead),
  *   - 「絵を見て」 / "look at my drawing": reads the newest picture paint
  *     saved (or the PPM at a given path) and says what it sees: the
  *     colors, how much of the sheet is used, where and how big. */
