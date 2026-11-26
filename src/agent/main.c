@@ -312,6 +312,19 @@ int main(void)
             greet(&p, b, store);
             continue;
         }
+        /* 「今、何してる？」「なんか重い」: what happens inside, in words; 「止めて」 after it */
+        if (body_is_what_query(line)) {
+            body_explain(&body, brain_detect_lang(line, brain_lang(b)) == BRAIN_EN, brain_stage(b), brain_user_name(b, &p), reply, sizeof reply);
+            brain_set_body(b, body.level);
+            g_body_level = body.level;
+            say(b, &p, reply);
+            continue;
+        }
+        if (body.explained_pid > 0 && body_is_stop_query(line)) {
+            body_stop(&body, brain_detect_lang(line, brain_lang(b)) == BRAIN_EN, reply, sizeof reply);
+            say(b, &p, reply);
+            continue;
+        }
         /* 「体調は？」: the machine's condition, with numbers */
         if (body_is_query(line)) {
             body_sample(&body);

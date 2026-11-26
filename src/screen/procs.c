@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include "procs.h"
+#include "../agent/procnet.h"
 
 #define C_BG       0x151B24
 #define C_EDGE     0x34455C
@@ -27,6 +28,8 @@
 #define C_TEXT     0xDDE3EA
 #define C_TEXT_DIM 0x8A94A0
 #define C_HOVER    0xFFFFFF
+#define C_OUT      0x9AD9F5         /* the outside, and the lines to it */
+#define OUT_R      11
 #define LEGEND_H   (FONT_H + 6)
 #define STATUS_H   (FONT_H + 6)
 #define FLASH_MS   900
@@ -316,6 +319,19 @@ int procs_sample(struct procs *p, long now)
         if (n->state == 'K') continue;
         if (n->cpu > best || (n->cpu == best && n->ticks > best_ticks)) { best = n->cpu; best_ticks = n->ticks; p->hot = i; }
     }
+    /* who talks to the outside (a socket with a remote end) */
+    struct procnet_conn conns[64];
+    int nc = procnet_outbound(p->root, conns, 64);
+    p->nnet = 0;
+    for (int i = 0; i < p->count; i++) {
+        struct proc_node *n = &p->n[i];
+        n->net = 0;
+        n->peer[0] = '\0';
+        if (n->state == 'K' || nc <= 0) continue;
+        int idx[16];
+        n->net = procnet_of_pid(p->root, n->pid, conns, nc, idx, 16);
+        if (n->net) { p->nnet++; snprintf(n->peer, sizeof n->peer, "%s:%d", conns[idx[0]].ip, conns[idx[0]].port); }
+    }
     p->sample_dt = dt;
     p->sampled = now;
     p->settled = 0;
@@ -327,7 +343,7 @@ static uint32_t pose_of(const struct procs *p, long now)
 {
     uint32_t h = 2166136261u;
 #define MIX(v) (h = (h ^ (uint32_t)(v)) * 16777619u)
-    MIX(p->count); MIX(p->hover); MIX(p->sampled);
+    MIX(p->count); MIX(p->hover); MIX(p->sampled); MIX(p->nnet);
     for (int i = 0; i < p->count; i++) {
         const struct proc_node *n = &p->n[i];
         MIX(n->x); MIX(n->y); MIX(n->state);
@@ -396,6 +412,18 @@ void procs_draw(struct procs *p, struct canvas *cv, const struct font *f, int ox
     g_clip = (struct clip){ ox < 0 ? 0 : ox, oy < 0 ? 0 : oy, ox + p->w > cv->w ? cv->w : ox + p->w, oy + p->h > cv->h ? cv->h : oy + p->h };
     canvas_fill(cv, ox, oy, p->w, p->h, C_BG);
     double t = now / 1000.0;
+    /* the outside: a pale disc in the top right corner, a dotted line from everyone talking to it */
+    int ocx = p->w - 34, ocy = LEGEND_H + 30;
+    if (p->nnet) {
+        for (int i = 0; i < p->count; i++) {
+            const struct proc_node *n = &p->n[i];
+            if (!n->net) continue;
+            int dx = ocx - n->x, dy = ocy - n->y, len = (int)sqrt((double)dx * dx + (double)dy * dy);
+            for (int k = 0; k < len; k += 6) put(cv, ox + n->x + dx * k / (len ? len : 1), oy + n->y + dy * k / (len ? len : 1), i == p->hover ? C_HOVER : C_OUT);
+        }
+    }
+    ring(cv, ox + ocx, oy + ocy, OUT_R, 0, 360, 1, p->nnet ? C_OUT : C_EDGE);
+    font_text(f, cv, ox + ocx - 8, oy + ocy - FONT_H / 2, "外", p->nnet ? C_OUT : C_TEXT_DIM, C_BG);
     /* the lines to the parents, with a spark running down the busy ones */
     for (int i = 0; i < p->count; i++) {
         const struct proc_node *n = &p->n[i], *par = n->parent >= 0 ? &p->n[n->parent] : NULL;
@@ -459,8 +487,10 @@ void procs_draw(struct procs *p, struct canvas *cv, const struct font *f, int ox
         human_kb(n->rss_kb, mem, sizeof mem);
         if (n->state == 'K') snprintf(status, sizeof status, "カーネル ・ %d 本のスレッドが OS の中で働いている", n->kernel);
         else {
-            int k = snprintf(status, sizeof status, "%s ・ PID %d ・ %s ・ CPU %d.%d%% ・ %s", n->name, n->pid, state_word(n->state), n->cpu / 10, n->cpu % 10, mem);
-            if (n->nchild && k > 0 && (size_t)k < sizeof status) snprintf(status + k, sizeof status - (size_t)k, " ・ 子 %d", n->nchild);
+            int k = snprintf(status, sizeof status, "%s ・ PID %d ・ %s ・ %s", n->name, n->pid, state_word(n->state), mem);
+            if (n->cpu > 0 && k > 0 && (size_t)k < sizeof status) k += snprintf(status + k, sizeof status - (size_t)k, " ・ CPU %d.%d%%", n->cpu / 10, n->cpu % 10);
+            if (n->nchild && k > 0 && (size_t)k < sizeof status) k += snprintf(status + k, sizeof status - (size_t)k, " ・ 子 %d", n->nchild);
+            if (n->net && k > 0 && (size_t)k < sizeof status) snprintf(status + k, sizeof status - (size_t)k, " ・ 外 %d本 %s", n->net, n->peer);
         }
     } else procs_summary(p, status, sizeof status);
     canvas_hline(cv, ox, oy + p->h - STATUS_H, p->w, C_EDGE);
@@ -478,5 +508,6 @@ const char *procs_summary(const struct procs *p, char *buf, size_t cap)
     else if (p->hot >= 0)
         snprintf(buf, cap, "プロセス %d ・ 動いている %d ・ よく働いた: %s", user, p->running, p->n[p->hot].name);
     else snprintf(buf, cap, "プロセスが見えない (%s が読めない)", p->root);
+    if (p->hot >= 0 && p->nnet) { size_t o = strlen(buf); snprintf(buf + o, cap - o, " ・ 外と話す %d", p->nnet); }
     return buf;
 }

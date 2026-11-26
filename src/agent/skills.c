@@ -313,6 +313,7 @@ static const struct { const char *ja, *en; } ability_names[] = {
     { "/path に「〇〇」と書いて", "write \"...\" to /path" },
     { "/path というファイルを作って / フォルダを作って", "make a file / a directory /path" },
     { "/path を消して", "delete /path" },
+    { "今、何してる？ / なんか重い(機械の中で何が忙しいか、いつから、誰が始めたか、外と話しているかを言葉で。続けて「止めて」で止める)", "what are you doing / why is it slow (what is busy inside, since when, who started it, who talks to the outside; then \"stop it\")" },
     { "プロセスを見せて(画面では図、文字だけなら一覧)", "show the processes (a picture on the desktop, a list otherwise)" },
     { "メモリとディスクは？", "memory and disk" },
     { "実行して: コマンド", "run: command" },

@@ -744,7 +744,7 @@ static void dump_windows(const char *path)
             continue;
         }
         if (g_win[i].kind == WK_PROC) {
-            fprintf(f, "(procs n=%d total=%d running=%d kernel=%d hot=%s)\n", g_procs.count, g_procs.total, g_procs.running, g_procs.kernel, procs_hot(&g_procs));
+            fprintf(f, "(procs n=%d total=%d running=%d kernel=%d net=%d hot=%s)\n", g_procs.count, g_procs.total, g_procs.running, g_procs.kernel, g_procs.nnet, procs_hot(&g_procs));
             continue;
         }
         char row[1024];
