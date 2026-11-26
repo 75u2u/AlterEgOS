@@ -17,6 +17,10 @@
  *     an ability X whose action Y is either another ability (composition)
  *     or a shell command. Kept in skills.txt in the store, so they survive
  *     a reboot and the OS grows new functions out of the conversation,
+ *   - built: a request none of the above answers (「/tmp の中の txt
+ *     ファイルを数えて」) is turned into a command from parts (forge.c), run,
+ *     and kept under the sentence with its slots blanked (「{path} の中の
+ *     {ext} ファイルを数えて」), so the next such sentence just works,
  *   - every action is appended to actions.log (when, asked how, what ran,
  *     how it ended), and "何をした？" / "what did you do" reads it back.
  *

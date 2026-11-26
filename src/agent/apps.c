@@ -167,8 +167,10 @@ static int handle_window(enum brain_lang lang, const char *you, const char *line
         snprintf(r->action, sizeof r->action, "open web %.100s", url);
         return 1;
     }
-    /* a search: 「〇〇を調べて」 */
-    if (app != APP_PAINT && app != APP_SHELL && search_in(line, lo, words, sizeof words)) {
+    /* a search: 「〇〇を調べて」 (a sentence that names a path on disk is
+     * about files, not the web: skills.c builds a tool for it) */
+    int on_disk = !have_url && (line[0] == '/' || has(line, " /") || has(line, "~/") || has(line, "./") || has(line, "「/"));
+    if (!on_disk && app != APP_PAINT && app != APP_SHELL && search_in(line, lo, words, sizeof words)) {
         while (*words == ' ') memmove(words, words + 1, strlen(words));
         size_t n = strlen(words);
         while (n > 0 && words[n - 1] == ' ') words[--n] = '\0';
